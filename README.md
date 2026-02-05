@@ -1,3 +1,16 @@
+# 1. Process the map data (Extract)
+docker run -t -v "${PWD}:/data" osrm/osrm-backend osrm-extract -p /opt/car.lua /data/sri-lanka-latest.osm.pbf
+
+# 2. Prepare the topology (Partition)
+docker run -t -v "${PWD}:/data" osrm/osrm-backend osrm-partition /data/sri-lanka-latest.osrm
+
+# 3. Finalize (Customize)
+docker run -t -v "${PWD}:/data" osrm/osrm-backend osrm-customize /data/sri-lanka-latest.osrm
+
+# 4. Start the Server
+docker run -t -i -p 5000:5000 -v "${PWD}:/data" osrm/osrm-backend osrm-routed --algorithm mld /data/sri-lanka-latest.osrm
+
+
 # RouteSense Backend 
 
 RouteSense Backend is a Spring Boot–based route optimization engine that calculates:
