@@ -16,64 +16,96 @@ public class OsrmService {
     private final RestTemplate restTemplate = new RestTemplate();
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    private final String OSRM_URL = "http://localhost:5000/route/v1/driving/";
+    // Base URL for local Docker OSRM
+    private static final String OSRM_BASE_URL = "http://localhost:5000/route/v1/driving/";
 
     public record RouteMetrics(double durationSeconds, double distanceMeters) {}
 
+    /**
+     * FETCHES SINGLE ROUTE WITH GEOMETRY (For Mode 2 "Curved Roads")
+     */
+    public Map<String, Object> getRoute(double lat1, double lon1, double lat2, double lon2) {
+        // Construct standard OSRM URL: /lon,lat;lon,lat
+        String coordinates = lon1 + "," + lat1 + ";" + lon2 + "," + lat2;
 
+        // request "polyline" explicitly for the decoder
+        String url = OSRM_BASE_URL + coordinates + "?overview=full&geometries=polyline";
+
+        try {
+            String response = restTemplate.getForObject(url, String.class);
+            JsonNode root = objectMapper.readTree(response);
+
+            if (root.path("code").asText().equals("Ok")) {
+                JsonNode route = root.path("routes").get(0);
+                Map<String, Object> mapData = new HashMap<>();
+
+                mapData.put("duration", route.path("duration").asDouble());
+                mapData.put("distanceMeters", route.path("distance").asDouble());
+                mapData.put("geometry", route.path("geometry").asText());
+
+                return mapData;
+            }
+        } catch (Exception e) {
+            System.err.println("Error fetching OSRM Route: " + e.getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * FETCHES ALTERNATIVES (For Mode 1)
+     */
     public List<Map<String, Object>> getRouteAlternatives(double lat1, double lon1, double lat2, double lon2) {
         String coordinates = lon1 + "," + lat1 + ";" + lon2 + "," + lat2;
-        String url = OSRM_URL + coordinates + "?alternatives=true&overview=full&geometries=geojson";
+
+        // FIXED: changed geojson -> polyline so it works with decodePolyline()
+        String url = OSRM_BASE_URL + coordinates + "?alternatives=true&overview=full&geometries=polyline";
 
         List<Map<String, Object>> routeOptions = new ArrayList<>();
 
         try {
             String response = restTemplate.getForObject(url, String.class);
             JsonNode root = objectMapper.readTree(response);
-            JsonNode routes = root.path("routes");
 
-            // Loop through all routes returned by OSRM
-            for (JsonNode route : routes) {
-                Map<String, Object> mapData = new HashMap<>();
+            if (root.path("code").asText().equals("Ok")) {
+                JsonNode routes = root.path("routes");
 
-
-                double duration = route.path("duration").asDouble();
-                double distanceMeters = route.path("distance").asDouble();
-                String geometry = route.path("geometry").toString();
-
-                mapData.put("duration", duration);
-                mapData.put("distanceMeters", distanceMeters);
-                mapData.put("geometry", geometry);
-
-                routeOptions.add(mapData);
+                for (JsonNode route : routes) {
+                    Map<String, Object> mapData = new HashMap<>();
+                    mapData.put("duration", route.path("duration").asDouble());
+                    mapData.put("distanceMeters", route.path("distance").asDouble());
+                    mapData.put("geometry", route.path("geometry").asText()); // Get encoded string
+                    routeOptions.add(mapData);
+                }
             }
         } catch (Exception e) {
-            System.out.println("Error calling OSRM Alternatives: " + e.getMessage());
+            System.err.println("Error calling OSRM Alternatives: " + e.getMessage());
         }
         return routeOptions;
     }
 
-
+    /**
+     * LIGHTWEIGHT METRICS (For Optimization Loop)
+     */
     public RouteMetrics getRouteMetrics(double lat1, double lon1, double lat2, double lon2, double trafficFactor) {
         String coordinates = lon1 + "," + lat1 + ";" + lon2 + "," + lat2;
-        String url = OSRM_URL + coordinates + "?overview=false";
+        String url = OSRM_BASE_URL + coordinates + "?overview=false"; // No geometry needed here
 
         try {
             String response = restTemplate.getForObject(url, String.class);
             JsonNode root = objectMapper.readTree(response);
 
-            JsonNode route0 = root.path("routes").get(0);
-            double baseDuration = route0.path("duration").asDouble();
-            double distanceMeters = route0.path("distance").asDouble();
+            if (root.path("code").asText().equals("Ok")) {
+                JsonNode route0 = root.path("routes").get(0);
+                double baseDuration = route0.path("duration").asDouble();
+                double distanceMeters = route0.path("distance").asDouble();
 
-            double adjustedDuration = baseDuration * (trafficFactor > 0 ? trafficFactor : 1.0);
-
-            return new RouteMetrics(adjustedDuration, distanceMeters);
+                double adjustedDuration = baseDuration * (trafficFactor > 0 ? trafficFactor : 1.0);
+                return new RouteMetrics(adjustedDuration, distanceMeters);
+            }
 
         } catch (Exception e) {
-            System.out.println("Error calling OSRM metrics: " + e.getMessage());
-            return new RouteMetrics(-1.0, -1.0);
+            System.err.println("Error calling OSRM metrics: " + e.getMessage());
         }
+        return new RouteMetrics(-1.0, -1.0);
     }
-
 }
