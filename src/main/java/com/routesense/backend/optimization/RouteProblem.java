@@ -1,7 +1,7 @@
 package com.routesense.backend.optimization;
 
 import com.routesense.backend.dto.RouteRequest;
-import com.routesense.backend.model.DeliveryOrder;
+import com.routesense.backend.model.RouteNode;
 import com.routesense.backend.service.OsrmService;
 import com.routesense.backend.util.Emissions;
 import org.moeaframework.core.Solution;
@@ -14,13 +14,13 @@ import java.util.List;
 
 public class RouteProblem extends AbstractProblem {
 
-    private final List<DeliveryOrder> orders;
+    private final List<RouteNode> orders;
     private final OsrmService osrmService;
     private final double trafficFactor;
     private final double payloadKg;
     private final RouteRequest.VehicleType vehicleType;
 
-    public RouteProblem(List<DeliveryOrder> orders,
+    public RouteProblem(List<RouteNode> orders,
                         OsrmService osrmService,
                         double trafficFactor,
                         double payloadKg,
@@ -54,7 +54,7 @@ public class RouteProblem extends AbstractProblem {
     public void evaluate(Solution solution) {
         int[] permutation = ((Permutation) solution.getVariable(0)).toArray();
 
-        List<DeliveryOrder> path = new ArrayList<>();
+        List<RouteNode> path = new ArrayList<>();
 
         path.add(orders.get(0)); // start
 
@@ -70,8 +70,8 @@ public class RouteProblem extends AbstractProblem {
         double totalDistanceKm = 0.0;
 
         for (int i = 0; i < path.size() - 1; i++) {
-            DeliveryOrder from = path.get(i);
-            DeliveryOrder to = path.get(i + 1);
+            RouteNode from = path.get(i);
+            RouteNode to = path.get(i + 1);
 
             OsrmService.RouteMetrics m = osrmService.getRouteMetrics(
                     from.getLatitude(), from.getLongitude(),

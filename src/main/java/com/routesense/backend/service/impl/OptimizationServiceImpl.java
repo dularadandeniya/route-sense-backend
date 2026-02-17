@@ -1,7 +1,7 @@
 package com.routesense.backend.service.impl;
 
 import com.routesense.backend.dto.RouteRequest;
-import com.routesense.backend.model.DeliveryOrder;
+import com.routesense.backend.model.RouteNode;
 import com.routesense.backend.optimization.RouteProblem;
 import com.routesense.backend.service.ExplanationService;
 import com.routesense.backend.service.OptimizationService;
@@ -73,10 +73,10 @@ public class OptimizationServiceImpl implements OptimizationService {
 
         // MODE 2: Multi-Stop Optimization (NSGA-II)
         else {
-            List<DeliveryOrder> routePoints = new ArrayList<>();
+            List<RouteNode> routePoints = new ArrayList<>();
 
             // 1. Start Point
-            DeliveryOrder start = new DeliveryOrder();
+            RouteNode start = new RouteNode();
             start.setLatitude(request.getStartLat());
             start.setLongitude(request.getStartLon());
             start.setCustomerName(request.getStartName());
@@ -84,15 +84,14 @@ public class OptimizationServiceImpl implements OptimizationService {
 
             // 2. Middle Stops
             for (RouteRequest.Waypoint wp : request.getStops()) {
-                DeliveryOrder stop = new DeliveryOrder();
+                RouteNode stop = new RouteNode();
                 stop.setLatitude(wp.getLatitude());
                 stop.setLongitude(wp.getLongitude());
-                stop.setCustomerName(wp.getName());
                 routePoints.add(stop);
             }
 
             // 3. End Point
-            DeliveryOrder end = new DeliveryOrder();
+            RouteNode end = new RouteNode();
             end.setLatitude(request.getEndLat());
             end.setLongitude(request.getEndLon());
             end.setCustomerName(request.getEndName());
@@ -192,12 +191,12 @@ public class OptimizationServiceImpl implements OptimizationService {
      * Converts the optimized stop order into a full list of GPS coordinates
      * representing the actual winding road path.
      */
-    private List<Map<String, Object>> fetchFullRouteGeometry(Solution solution, List<DeliveryOrder> allOrders) {
+    private List<Map<String, Object>> fetchFullRouteGeometry(Solution solution, List<RouteNode> allOrders) {
         List<Map<String, Object>> fullPath = new ArrayList<>();
         int[] permutation = ((Permutation) solution.getVariable(0)).toArray();
 
         // 1. Construct the ordered list of Stops
-        List<DeliveryOrder> orderedStops = new ArrayList<>();
+        List<RouteNode> orderedStops = new ArrayList<>();
         orderedStops.add(allOrders.get(0)); // Start
         for (int index : permutation) {
             orderedStops.add(allOrders.get(index + 1)); // Middle stops
@@ -208,8 +207,8 @@ public class OptimizationServiceImpl implements OptimizationService {
 
         // 2. Loop through pairs (A->B, B->C) and fetch geometry
         for (int i = 0; i < orderedStops.size() - 1; i++) {
-            DeliveryOrder from = orderedStops.get(i);
-            DeliveryOrder to = orderedStops.get(i + 1);
+            RouteNode from = orderedStops.get(i);
+            RouteNode to = orderedStops.get(i + 1);
 
             // Call OSRM for the specific road shape between these two points
             Map<String, Object> segment = osrmService.getRoute(
