@@ -1,8 +1,7 @@
 package com.routesense.backend.controller;
 
 import com.routesense.backend.dto.RouteRequest;
-import com.routesense.backend.model.Location;
-import com.routesense.backend.repository.LocationRepository;
+import com.routesense.backend.entity.Location;
 import com.routesense.backend.service.LocationService;
 import com.routesense.backend.service.OptimizationService;
 import org.springframework.beans.factory.annotation.Autowired;

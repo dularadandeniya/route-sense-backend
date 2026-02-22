@@ -1,4 +1,4 @@
-package com.routesense.backend.model;
+package com.routesense.backend.entity;
 
 import lombok.AllArgsConstructor;
 import lombok.Data;

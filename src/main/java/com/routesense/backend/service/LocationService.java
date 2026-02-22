@@ -1,6 +1,6 @@
 package com.routesense.backend.service;
 
-import com.routesense.backend.model.Location;
+import com.routesense.backend.entity.Location;
 
 import java.util.List;
 
