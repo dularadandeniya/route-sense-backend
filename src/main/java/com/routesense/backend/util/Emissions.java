@@ -1,20 +1,30 @@
 package com.routesense.backend.util;
 
 import com.routesense.backend.dto.RouteRequest;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
 
-public final class Emissions {
+@Service
+public class Emissions { // Removed 'final'
 
-    private Emissions() {}
+    // Removed the private constructor
 
     private static final double CO2_PER_LITER_DIESEL = 2.68;
-    public static final double DIESEL_PRICE_LKR = 277.0;
 
-    public static double calcCo2Kg(double distanceKm, double payloadKg, double trafficFactor, RouteRequest.VehicleType type) {
+    @Value("${routesense.app.fuel.diesel-price}")
+    private double dieselPrice;
+
+    public double getDieselPrice() {
+        return dieselPrice;
+    }
+
+    // Removed 'static' from all methods below
+    public double calcCo2Kg(double distanceKm, double payloadKg, double trafficFactor, RouteRequest.VehicleType type) {
         double fuelLiters = calcFuelLiters(distanceKm, payloadKg, trafficFactor, type);
         return fuelLiters * CO2_PER_LITER_DIESEL;
     }
 
-    private static VehicleProfile profile(RouteRequest.VehicleType type) {
+    private VehicleProfile profile(RouteRequest.VehicleType type) {
         if (type == null) type = RouteRequest.VehicleType.MEDIUM;
         return switch (type) {
             case LIGHT -> new VehicleProfile(0.14, 2000.0);
@@ -23,13 +33,13 @@ public final class Emissions {
         };
     }
 
-    private static double clamp(double v, double min, double max) {
+    private double clamp(double v, double min, double max) {
         return Math.max(min, Math.min(max, v));
     }
 
     private record VehicleProfile(double baseLitersPerKm, double maxPayloadKg) {}
 
-    public static double calcFuelLiters(
+    public double calcFuelLiters(
             double distanceKm,
             double payloadKg,
             double trafficFactor,
@@ -45,5 +55,4 @@ public final class Emissions {
 
         return distanceKm * p.baseLitersPerKm * weightFactor * safeTraffic;
     }
-
 }

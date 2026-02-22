@@ -1,9 +1,10 @@
 package com.routesense.backend.service.impl;
 
 import com.routesense.backend.dto.RouteRequest;
-import com.routesense.backend.model.RouteNode;
+import com.routesense.backend.entity.RouteNode;
 import com.routesense.backend.optimization.RouteProblem;
 import com.routesense.backend.service.ExplanationService;
+import com.routesense.backend.service.MapboxApiService;
 import com.routesense.backend.service.OptimizationService;
 import com.routesense.backend.service.OsrmService;
 import com.routesense.backend.util.Emissions;
@@ -13,6 +14,8 @@ import org.moeaframework.core.Solution;
 import org.moeaframework.core.variable.Permutation;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -28,206 +31,241 @@ public class OptimizationServiceImpl implements OptimizationService {
     @Autowired
     private ExplanationService explanationService;
 
+    @Autowired
+    private Emissions emissions;
+
+    @Autowired
+    private MapboxApiService mapboxApiService;
+
+    private double[][] timeMatrix;
+    private double[][] distMatrix;
+    private double[][] trafficRatioMatrix; // NEW: Added the traffic ratio matrix
+
     @Override
     public List<Map<String, Object>> findRoutesDynamic(RouteRequest request) {
         List<Map<String, Object>> results = new ArrayList<>();
 
-        // MODE 1: Simple A to B (Direct)
-        if (request.getStops() == null || request.getStops().isEmpty()) {
-            List<Map<String, Object>> alternatives = osrmService.getRouteAlternatives(
-                    request.getStartLat(), request.getStartLon(),
-                    request.getEndLat(), request.getEndLon()
-            );
+        int stopCount = (request.getStops() == null) ? 0 : request.getStops().size();
+        int totalLocs = stopCount + 2;
 
-            for (Map<String, Object> alt : alternatives) {
-                double time = ((double) alt.get("duration")) * request.getTrafficFactor();
-                double distKm = ((double) alt.get("distanceMeters")) / 1000.0;
-                double fuelLiters = Emissions.calcFuelLiters(
-                        distKm,
-                        request.getWeightKg(),
-                        request.getTrafficFactor(),
-                        request.getVehicleType()
-                );
-                double cost = fuelLiters * Emissions.DIESEL_PRICE_LKR;
-                double co2 = Emissions.calcCo2Kg(
-                        distKm,
-                        request.getWeightKg(),
-                        request.getTrafficFactor(),
-                        request.getVehicleType()
-                );
+        boolean useGoogleMaps = true;
 
-                Map<String, Object> option = new HashMap<>();
-                option.put("mode", "Direct Path");
-                option.put("time_seconds", time);
-                option.put("cost_currency", cost);
-                option.put("co2_emissions", co2);
-                option.put("explanation", explanationService.generateExplanation(time, cost, co2));
+        List<RouteNode> allPoints = buildRoutePoints(request);
 
-                // For direct mode, OSRM already gives us the full geometry
-                option.put("route_sequence", decodePolyline((String) alt.get("geometry")));
+        // 1. Fetch or Build Matrix First
+        try {
+            String coordString = buildCoordinateString(allPoints);
+            String json = mapboxApiService.fetchMatrix(coordString);
+            // Pass allPoints here to enable the dynamic comparison
+            parseMapboxMatrix(json, allPoints);
+        } catch (Exception e) {
+            System.err.println("Mapbox failed. Falling back to static OSRM.");
+            buildOsrmMatrix(allPoints, request.getTrafficFactor());
+        }
 
-                option.put("fuel_liters", fuelLiters);
-                results.add(option);
-            }
+        // MODE 1: Direct Path
+        if (stopCount == 0) {
+            double time = timeMatrix[0][1];
+            double distKm = distMatrix[0][1] / 1000.0;
+            double currentRatio = trafficRatioMatrix[0][1]; // Get specific ratio for the direct path
+
+            double fuel = emissions.calcFuelLiters(distKm, request.getWeightKg(), currentRatio, request.getVehicleType());
+            double cost = fuel * emissions.getDieselPrice();
+            double co2 = emissions.calcCo2Kg(distKm, request.getWeightKg(), currentRatio, request.getVehicleType());
+
+            Map<String, Object> option = new HashMap<>();
+            option.put("mode", "Direct Path");
+            option.put("time_seconds", time);
+            option.put("cost_currency", cost);
+            option.put("co2_emissions", co2);
+            option.put("explanation", explanationService.generateExplanation(time, cost, co2, time, co2));
+            option.put("route_sequence", fetchFullRouteGeometryForDirect(allPoints.get(0), allPoints.get(1)));
+            results.add(option);
+            return results;
         }
 
         // MODE 2: Multi-Stop Optimization (NSGA-II)
-        else {
-            List<RouteNode> routePoints = new ArrayList<>();
+        // Pass the new trafficRatioMatrix and the emissions service into the problem
+        RouteProblem problem = new RouteProblem(
+                allPoints, timeMatrix, distMatrix, trafficRatioMatrix,
+                request.getWeightKg(), request.getVehicleType(), emissions
+        );
 
-            // 1. Start Point
-            RouteNode start = new RouteNode();
-            start.setLatitude(request.getStartLat());
-            start.setLongitude(request.getStartLon());
-            start.setCustomerName(request.getStartName());
-            routePoints.add(start);
+        NondominatedPopulation pop = new Executor()
+                .withProblem(problem)
+                .withAlgorithm("NSGAII")
+                .withMaxEvaluations(500)
+                .run();
 
-            // 2. Middle Stops
-            for (RouteRequest.Waypoint wp : request.getStops()) {
-                RouteNode stop = new RouteNode();
-                stop.setLatitude(wp.getLatitude());
-                stop.setLongitude(wp.getLongitude());
-                routePoints.add(stop);
-            }
+        List<String> foundPerms = new ArrayList<>();
+        double bestTime = Double.MAX_VALUE;
+        double bestCo2 = Double.MAX_VALUE;
 
-            // 3. End Point
-            RouteNode end = new RouteNode();
-            end.setLatitude(request.getEndLat());
-            end.setLongitude(request.getEndLon());
-            end.setCustomerName(request.getEndName());
-            routePoints.add(end);
+        // Process Optimal Routes
+        for (Solution solution : pop) {
+            String permString = solution.getVariable(0).toString();
+            if (foundPerms.contains(permString)) continue;
+            foundPerms.add(permString);
 
-            // Run NSGA-II Algorithm
-            RouteProblem problem = new RouteProblem(
-                    routePoints,
-                    osrmService,
-                    request.getTrafficFactor(),
-                    request.getWeightKg(),
-                    request.getVehicleType()
-            );
+            double time = solution.getObjective(0);
+            double cost = solution.getObjective(1);
+            double co2 = solution.getObjective(2);
 
-            NondominatedPopulation population = new Executor()
-                    .withProblem(problem)
-                    .withAlgorithm("NSGAII")
-                    .withMaxEvaluations(500)
-                    .run();
+            if (time < bestTime) bestTime = time;
+            if (co2 < bestCo2) bestCo2 = co2;
 
-            List<String> foundPermutations = new ArrayList<>();
+            Map<String, Object> routeOption = new HashMap<>();
+            routeOption.put("mode", "Recommended (Optimal)");
+            routeOption.put("time_seconds", time);
+            routeOption.put("cost_currency", cost);
+            routeOption.put("co2_emissions", co2);
+            routeOption.put("explanation", explanationService.generateExplanation(time, cost, co2, bestTime, bestCo2));
+            routeOption.put("route_sequence", fetchFullRouteGeometry(solution, allPoints, useGoogleMaps));
 
-            // Process Optimal Solutions
-            for (Solution solution : population) {
-                String permString = solution.getVariable(0).toString();
-                if (foundPermutations.contains(permString)) continue;
-                foundPermutations.add(permString);
-
-                Map<String, Object> routeOption = new HashMap<>();
-                double time = solution.getObjective(0);
-                double cost = solution.getObjective(1);
-                double co2 = solution.getObjective(2);
-
-                routeOption.put("mode", "Recommended (Optimal)");
-                routeOption.put("time_seconds", time);
-                routeOption.put("cost_currency", cost);
-                routeOption.put("co2_emissions", co2);
-                routeOption.put("explanation", explanationService.generateExplanation(time, cost, co2));
-
-                // NEW: Fetch full curved geometry instead of just points
-                routeOption.put("route_sequence", fetchFullRouteGeometry(solution, routePoints));
-
-                double fuelLiters = cost / Emissions.DIESEL_PRICE_LKR;
-                routeOption.put("fuel_liters", fuelLiters);
-
-                results.add(routeOption);
-            }
-
-            // Generate Alternatives if needed
-            int maxAttempts = 50;
-            int attempts = 0;
-
-            if (!results.isEmpty()) {
-                Map<String, Object> bestRoute = results.get(0);
-                double bestTime = (double) bestRoute.get("time_seconds");
-                double bestCost = (double) bestRoute.get("cost_currency");
-                double bestCO2 = (double) bestRoute.get("co2_emissions");
-
-                while (results.size() < 3 && attempts < maxAttempts) {
-                    attempts++;
-                    Solution randomSol = problem.newSolution();
-                    String permString = randomSol.getVariable(0).toString();
-
-                    if (foundPermutations.contains(permString)) continue;
-
-                    problem.evaluate(randomSol);
-                    foundPermutations.add(permString);
-
-                    Map<String, Object> routeOption = new HashMap<>();
-                    double time = randomSol.getObjective(0);
-                    double cost = randomSol.getObjective(1);
-                    double co2 = randomSol.getObjective(2);
-
-                    routeOption.put("mode", "Alternative Route");
-                    routeOption.put("time_seconds", time);
-                    routeOption.put("cost_currency", cost);
-                    routeOption.put("co2_emissions", co2);
-
-                    double timeDiff = time - bestTime;
-                    double costDiff = cost - bestCost;
-                    double co2Diff = co2 - bestCO2;
-
-                    routeOption.put("explanation", explanationService.generateComparisonExplanation(timeDiff, costDiff, co2Diff));
-
-                    // NEW: Fetch full geometry for alternatives too
-                    routeOption.put("route_sequence", fetchFullRouteGeometry(randomSol, routePoints));
-
-                    results.add(routeOption);
-                }
-            }
+            results.add(routeOption);
         }
 
         return results;
     }
 
-    /**
-     * Converts the optimized stop order into a full list of GPS coordinates
-     * representing the actual winding road path.
-     */
-    private List<Map<String, Object>> fetchFullRouteGeometry(Solution solution, List<RouteNode> allOrders) {
+    private List<RouteNode> buildRoutePoints(RouteRequest request) {
+        List<RouteNode> points = new ArrayList<>();
+        points.add(new RouteNode(request.getStartName(), request.getStartLat(), request.getStartLon()));
+
+        if (request.getStops() != null) {
+            for (RouteRequest.Waypoint wp : request.getStops()) {
+                points.add(new RouteNode(wp.getName(), wp.getLatitude(), wp.getLongitude()));
+            }
+        }
+
+        points.add(new RouteNode(request.getEndName(), request.getEndLat(), request.getEndLon()));
+        return points;
+    }
+
+    private String buildCoordinateString(List<RouteNode> points) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < points.size(); i++) {
+            sb.append(points.get(i).getLongitude()).append(",").append(points.get(i).getLatitude());
+            if (i < points.size() - 1) sb.append(";");
+        }
+        return sb.toString();
+    }
+
+    private void parseMapboxMatrix(String jsonStr, List<RouteNode> allPoints) {
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            int size = allPoints.size();
+            timeMatrix = new double[size][size];
+            distMatrix = new double[size][size];
+            trafficRatioMatrix = new double[size][size];
+
+            JsonNode root = mapper.readTree(jsonStr);
+            JsonNode durations = root.path("durations");
+            JsonNode distances = root.path("distances");
+
+            for (int i = 0; i < size; i++) {
+                for (int j = 0; j < size; j++) {
+                    if (i == j) {
+                        trafficRatioMatrix[i][j] = 1.0;
+                        continue;
+                    }
+
+                    double liveTime = durations.get(i).get(j).asDouble();
+                    double dist = distances.get(i).get(j).asDouble();
+
+                    // Get "Perfect World" time from OSRM (factor 1.0)
+                    OsrmService.RouteMetrics base = osrmService.getRouteMetrics(
+                            allPoints.get(i).getLatitude(), allPoints.get(i).getLongitude(),
+                            allPoints.get(j).getLatitude(), allPoints.get(j).getLongitude(),
+                            1.0
+                    );
+
+                    double baseTime = base.durationSeconds();
+
+                    // Calculate the live ratio: Live / Base
+                    // If live is 15 mins and base is 10 mins, ratio is 1.5
+                    double dynamicRatio = (baseTime > 0) ? (liveTime / baseTime) : 1.0;
+
+                    timeMatrix[i][j] = liveTime;
+                    distMatrix[i][j] = dist;
+                    trafficRatioMatrix[i][j] = Math.max(1.0, dynamicRatio);
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Dynamic Matrix parsing failed.");
+        }
+    }
+
+    private void buildOsrmMatrix(List<RouteNode> points, double trafficFactor) {
+        int size = points.size();
+        timeMatrix = new double[size][size];
+        distMatrix = new double[size][size];
+        trafficRatioMatrix = new double[size][size]; // Initialize array for fallback
+
+        // If fallback occurs, the ratio becomes the static factor the user provided
+        double safeFactor = (trafficFactor > 0) ? trafficFactor : 1.0;
+
+        for (int i = 0; i < size; i++) {
+            for (int j = 0; j < size; j++) {
+                if (i == j) {
+                    trafficRatioMatrix[i][j] = 1.0;
+                    continue;
+                }
+
+                OsrmService.RouteMetrics m = osrmService.getRouteMetrics(
+                        points.get(i).getLatitude(), points.get(i).getLongitude(),
+                        points.get(j).getLatitude(), points.get(j).getLongitude(),
+                        safeFactor
+                );
+
+                timeMatrix[i][j] = m.durationSeconds();
+                distMatrix[i][j] = m.distanceMeters();
+                trafficRatioMatrix[i][j] = safeFactor; // Store fallback factor
+            }
+        }
+    }
+
+    private List<Map<String, Object>> fetchFullRouteGeometryForDirect(RouteNode from, RouteNode to) {
+        List<Map<String, Object>> fullPath = new ArrayList<>();
+        Map<String, Object> segment = osrmService.getRoute(
+                from.getLatitude(), from.getLongitude(),
+                to.getLatitude(), to.getLongitude()
+        );
+        if (segment != null && segment.containsKey("geometry")) {
+            fullPath.addAll(decodePolyline((String) segment.get("geometry")));
+        }
+        return fullPath;
+    }
+
+    private List<Map<String, Object>> fetchFullRouteGeometry(Solution solution, List<RouteNode> allOrders, boolean useGoogleMaps) {
         List<Map<String, Object>> fullPath = new ArrayList<>();
         int[] permutation = ((Permutation) solution.getVariable(0)).toArray();
 
-        // 1. Construct the ordered list of Stops
         List<RouteNode> orderedStops = new ArrayList<>();
-        orderedStops.add(allOrders.get(0)); // Start
+        orderedStops.add(allOrders.get(0));
         for (int index : permutation) {
-            orderedStops.add(allOrders.get(index + 1)); // Middle stops
+            orderedStops.add(allOrders.get(index + 1));
         }
         if (allOrders.size() > 1) {
-            orderedStops.add(allOrders.get(allOrders.size() - 1)); // End
+            orderedStops.add(allOrders.get(allOrders.size() - 1));
         }
 
-        // 2. Loop through pairs (A->B, B->C) and fetch geometry
         for (int i = 0; i < orderedStops.size() - 1; i++) {
             RouteNode from = orderedStops.get(i);
             RouteNode to = orderedStops.get(i + 1);
 
-            // Call OSRM for the specific road shape between these two points
             Map<String, Object> segment = osrmService.getRoute(
                     from.getLatitude(), from.getLongitude(),
                     to.getLatitude(), to.getLongitude()
             );
 
             if (segment != null && segment.containsKey("geometry")) {
-                String polyline = (String) segment.get("geometry");
-                fullPath.addAll(decodePolyline(polyline));
+                fullPath.addAll(decodePolyline((String) segment.get("geometry")));
             }
         }
         return fullPath;
     }
 
-    /**
-     * Helper: Decodes OSRM's compressed string into Lat/Lon maps.
-     * (Assuming standard Polyline encoding precision 1e5)
-     */
     private List<Map<String, Object>> decodePolyline(String encoded) {
         List<Map<String, Object>> poly = new ArrayList<>();
         int index = 0, len = encoded.length();
@@ -260,5 +298,4 @@ public class OptimizationServiceImpl implements OptimizationService {
         }
         return poly;
     }
-
 }

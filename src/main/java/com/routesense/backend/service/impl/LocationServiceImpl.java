@@ -1,6 +1,6 @@
 package com.routesense.backend.service.impl;
 
-import com.routesense.backend.model.Location;
+import com.routesense.backend.entity.Location;
 import com.routesense.backend.repository.LocationRepository;
 import com.routesense.backend.service.LocationService;
 import org.springframework.stereotype.Service;

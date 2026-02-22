@@ -4,21 +4,20 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class ExplanationService {
-    public String generateExplanation(double time, double cost, double co2) {
-        // Rule 1: The "Green" Win
-        if (co2 < 0.13 && time > 128.0) {
-            return String.format("This route reduces CO2 emissions by %.1f%% compared to the standard, though it adds a slight delay.",
-                    (0.15 - co2) * 1000);
+
+    // Used for the optimal or direct route
+    public String generateExplanation(double time, double cost, double co2, double baseTime, double baseCo2) {
+        if (co2 < baseCo2 && time > baseTime) {
+            double saved = ((baseCo2 - co2) / baseCo2) * 100;
+            return String.format("Reduces CO2 by %.1f%%. Adds a slight delay.", saved);
         }
 
-        // Rule 2: The "Fast" Win
-        if (time <= 128.0) {
-            return String.format("This is the fastest available route, saving %.0f seconds compared to alternatives.",
-                    130.0 - time);
+        if (time <= baseTime) {
+            return "This is the fastest available route.";
         }
 
-        // Rule 3: The "Balanced" Trade-off
-        return "This route offers a balanced trade-off between cost and delivery time.";
+        long mins = Math.round(time / 60.0);
+        return String.format("Balanced route: %d mins, LKR %.2f, %.2f kg CO2.", mins, cost, co2);
     }
 
     public String generateComparisonExplanation(double timeDiff, double costDiff, double co2Diff) {

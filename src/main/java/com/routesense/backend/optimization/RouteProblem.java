@@ -1,9 +1,8 @@
 package com.routesense.backend.optimization;
 
 import com.routesense.backend.dto.RouteRequest;
-import com.routesense.backend.model.RouteNode;
-import com.routesense.backend.service.OsrmService;
-import com.routesense.backend.util.Emissions;
+import com.routesense.backend.entity.RouteNode;
+import com.routesense.backend.util.Emissions; // Ensure this matches your final naming (Emissions or EmissionsService)
 import org.moeaframework.core.Solution;
 import org.moeaframework.core.variable.Permutation;
 import org.moeaframework.problem.AbstractProblem;
@@ -15,23 +14,29 @@ import java.util.List;
 public class RouteProblem extends AbstractProblem {
 
     private final List<RouteNode> orders;
-    private final OsrmService osrmService;
-    private final double trafficFactor;
+    private final double[][] timeMatrix;
+    private final double[][] distMatrix;
+    private final double[][] trafficRatioMatrix; // New: Segment-specific traffic ratios
     private final double payloadKg;
     private final RouteRequest.VehicleType vehicleType;
+    private final Emissions emissions; // Injected service for math
 
     public RouteProblem(List<RouteNode> orders,
-                        OsrmService osrmService,
-                        double trafficFactor,
+                        double[][] timeMatrix,
+                        double[][] distMatrix,
+                        double[][] trafficRatioMatrix,
                         double payloadKg,
-                        RouteRequest.VehicleType vehicleType) {
+                        RouteRequest.VehicleType vehicleType,
+                        Emissions emissions) {
 
         super(1, 3);
         this.orders = orders;
-        this.osrmService = osrmService;
-        this.trafficFactor = trafficFactor <= 0 ? 1.0 : trafficFactor;
+        this.timeMatrix = timeMatrix;
+        this.distMatrix = distMatrix;
+        this.trafficRatioMatrix = trafficRatioMatrix;
         this.payloadKg = Math.max(0.0, payloadKg);
         this.vehicleType = vehicleType == null ? RouteRequest.VehicleType.MEDIUM : vehicleType;
+        this.emissions = emissions;
     }
 
     @Override
@@ -54,51 +59,46 @@ public class RouteProblem extends AbstractProblem {
     public void evaluate(Solution solution) {
         int[] permutation = ((Permutation) solution.getVariable(0)).toArray();
 
-        List<RouteNode> path = new ArrayList<>();
-
-        path.add(orders.get(0)); // start
+        List<Integer> pathIndices = new ArrayList<>();
+        pathIndices.add(0); // Start node
 
         for (int index : permutation) {
-            path.add(orders.get(index + 1));
+            pathIndices.add(index + 1); // Middle stops
         }
 
         if (orders.size() > 1) {
-            path.add(orders.get(orders.size() - 1)); // end
+            pathIndices.add(orders.size() - 1); // End node
         }
 
         double totalTime = 0.0;
-        double totalDistanceKm = 0.0;
+        double totalCost = 0.0;
+        double totalCO2 = 0.0;
 
-        for (int i = 0; i < path.size() - 1; i++) {
-            RouteNode from = path.get(i);
-            RouteNode to = path.get(i + 1);
+        // Loop through segments to apply segment-specific traffic data
+        for (int i = 0; i < pathIndices.size() - 1; i++) {
+            int fromIdx = pathIndices.get(i);
+            int toIdx = pathIndices.get(i + 1);
 
-            OsrmService.RouteMetrics m = osrmService.getRouteMetrics(
-                    from.getLatitude(), from.getLongitude(),
-                    to.getLatitude(), to.getLongitude(),
-                    trafficFactor
-            );
+            double segTime = timeMatrix[fromIdx][toIdx];
+            double segDistMeters = distMatrix[fromIdx][toIdx];
+            double segTrafficRatio = trafficRatioMatrix[fromIdx][toIdx]; // Live ratio for this road
 
-            double segTime = m.durationSeconds();
-            double segDistMeters = m.distanceMeters();
+            // Penalize invalid paths
+            if (segTime <= 0) segTime = Double.MAX_VALUE / 1000;
 
-            // Penalize failures
-            if (segTime < 0) segTime = 10000;
-            if (segDistMeters < 0) segDistMeters = 1_000_000;
+            double segDistKm = segDistMeters / 1000.0;
 
+            // Objective 1: Time
             totalTime += segTime;
-            totalDistanceKm += (segDistMeters / 1000.0);
+
+            // Objective 2 & 3: Cost and CO2 using the actual segment traffic ratio
+            double segFuel = emissions.calcFuelLiters(segDistKm, payloadKg, segTrafficRatio, vehicleType);
+            totalCost += (segFuel * emissions.getDieselPrice());
+            totalCO2 += emissions.calcCo2Kg(segDistKm, payloadKg, segTrafficRatio, vehicleType);
         }
 
-        double objectiveTime = totalTime;
-
-        double fuelLiters = Emissions.calcFuelLiters(totalDistanceKm, payloadKg, trafficFactor, vehicleType);
-        double objectiveCost = fuelLiters * Emissions.DIESEL_PRICE_LKR;
-
-        double objectiveCO2 = Emissions.calcCo2Kg(totalDistanceKm, payloadKg, trafficFactor, vehicleType);
-
-        solution.setObjective(0, objectiveTime);
-        solution.setObjective(1, objectiveCost);
-        solution.setObjective(2, objectiveCO2);
+        solution.setObjective(0, totalTime);
+        solution.setObjective(1, totalCost);
+        solution.setObjective(2, totalCO2);
     }
 }
