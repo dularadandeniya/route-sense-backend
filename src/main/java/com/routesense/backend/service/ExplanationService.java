@@ -5,38 +5,41 @@ import org.springframework.stereotype.Service;
 @Service
 public class ExplanationService {
 
-    // Used for the optimal or direct route
     public String generateExplanation(double time, double cost, double co2, double baseTime, double baseCo2) {
+
+        // If greener than base but slower
         if (co2 < baseCo2 && time > baseTime) {
-            double saved = ((baseCo2 - co2) / baseCo2) * 100;
-            return String.format("Reduces CO2 by %.1f%%. Adds a slight delay.", saved);
+            double savedPct = ((baseCo2 - co2) / baseCo2) * 100.0;
+            long extraMin = Math.round((time - baseTime) / 60.0);
+            return String.format("Reduces CO2 by %.1f%% with ~%d min time trade-off.", savedPct, Math.max(1, extraMin));
         }
 
+        // If this is the fastest (or tied fastest)
         if (time <= baseTime) {
             return "This is the fastest available route.";
         }
 
-        long mins = Math.round(time / 60.0);
-        return String.format("Balanced route: %d mins, LKR %.2f, %.2f kg CO2.", mins, cost, co2);
+        return "Balanced route considering time, cost, and emissions.";
     }
 
     public String generateComparisonExplanation(double timeDiff, double costDiff, double co2Diff) {
         StringBuilder sb = new StringBuilder();
 
-        // 1. Analyze Time
-        if (timeDiff > 0) {
-            long min = Math.round(timeDiff / 60);
-            sb.append("Takes ").append(min).append(" mins longer");
-        } else {
-            long min = Math.round(Math.abs(timeDiff) / 60);
-            sb.append("Saves ").append(min).append(" mins");
-        }
+        // Time
+        long mins = Math.round(Math.abs(timeDiff) / 60.0);
+        if (timeDiff > 0) sb.append("Takes ").append(mins).append(" mins longer");
+        else sb.append("Saves ").append(mins).append(" mins");
 
-        // 2. Analyze CO2 (The Trade-off)
+        // Cost
+        long costAbs = Math.round(Math.abs(costDiff));
+        if (costDiff > 0) sb.append(", costs ~Rs ").append(costAbs).append(" more");
+        else if (costDiff < 0) sb.append(", saves ~Rs ").append(costAbs);
+
+        // CO2
         if (co2Diff < 0) {
-            sb.append(", but reduces emissions by ").append(String.format("%.2f", Math.abs(co2Diff))).append(" kg.");
+            sb.append(", and reduces CO2 by ").append(String.format("%.2f", Math.abs(co2Diff))).append(" kg.");
         } else if (co2Diff > 0) {
-            sb.append(", and produces ").append(String.format("%.2f", co2Diff)).append(" kg more CO2.");
+            sb.append(", but emits ").append(String.format("%.2f", co2Diff)).append(" kg more CO2.");
         } else {
             sb.append(".");
         }
