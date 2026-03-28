@@ -54,6 +54,7 @@ public class SecurityConfig {
                         .requestMatchers("/api/auth/**").permitAll()
                         .requestMatchers("/api/routes/**").permitAll()
                         .requestMatchers("/api/test/**").permitAll()
+                        .requestMatchers("/api/schedules/**").permitAll()
                         .anyRequest().authenticated()
                 );
 
@@ -62,7 +63,7 @@ public class SecurityConfig {
         return http.build();
     }
 
-    // 🌐 ADD THIS BEAN TO TRUST YOUR REACT APP
+
     @Bean
     public org.springframework.web.cors.CorsConfigurationSource corsConfigurationSource() {
         org.springframework.web.cors.CorsConfiguration configuration = new org.springframework.web.cors.CorsConfiguration();

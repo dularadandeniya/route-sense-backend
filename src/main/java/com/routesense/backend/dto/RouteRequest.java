@@ -2,6 +2,7 @@ package com.routesense.backend.dto;
 
 import lombok.Data;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Data
@@ -22,12 +23,15 @@ public class RouteRequest {
 
     private double trafficFactor = 1.0;
 
+    private LocalDateTime departureTime;
+
     @Data
     public static class Waypoint {
         private String name;
         private double latitude;
         private double longitude;
     }
+
     public enum VehicleType { LIGHT, MEDIUM, HEAVY }
 
     private VehicleType vehicleType = VehicleType.MEDIUM;
@@ -48,6 +52,4 @@ public class RouteRequest {
     public String getEndName() {
         return (endName == null || endName.isEmpty()) ? "Final Destination" : endName;
     }
-
-
 }
