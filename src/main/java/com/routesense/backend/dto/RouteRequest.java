@@ -22,7 +22,6 @@ public class RouteRequest {
     private int dueTime;
 
     private double trafficFactor = 1.0;
-
     private LocalDateTime departureTime;
 
     @Data
@@ -41,8 +40,7 @@ public class RouteRequest {
     }
 
     public double getTrafficFactor() {
-        if (trafficFactor <= 0) return 1.0;
-        return trafficFactor;
+        return trafficFactor <= 0 ? 1.0 : trafficFactor;
     }
 
     public String getStartName() {

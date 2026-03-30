@@ -32,4 +32,8 @@ public class ScheduleTripRequest {
         private double latitude;
         private double longitude;
     }
+
+    public VehicleType getVehicleType() {
+        return vehicleType == null ? VehicleType.MEDIUM : vehicleType;
+    }
 }

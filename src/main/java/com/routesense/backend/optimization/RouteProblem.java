@@ -60,30 +60,26 @@ public class RouteProblem extends AbstractProblem {
         int[] permutation = ((Permutation) solution.getVariable(0)).toArray();
 
         List<Integer> pathIndices = new ArrayList<>();
-        pathIndices.add(0); // Start node
-
+        pathIndices.add(0);
         for (int index : permutation) {
-            pathIndices.add(index + 1); // Middle stops
+            pathIndices.add(index + 1);
         }
-
         if (orders.size() > 1) {
-            pathIndices.add(orders.size() - 1); // End node
+            pathIndices.add(orders.size() - 1);
         }
 
         double totalTime = 0.0;
         double totalCost = 0.0;
         double totalCO2 = 0.0;
 
-        // Loop through segments to apply segment-specific traffic data
         for (int i = 0; i < pathIndices.size() - 1; i++) {
             int fromIdx = pathIndices.get(i);
             int toIdx = pathIndices.get(i + 1);
 
             double segTime = timeMatrix[fromIdx][toIdx];
             double segDistMeters = distMatrix[fromIdx][toIdx];
-            double segTrafficRatio = trafficRatioMatrix[fromIdx][toIdx]; // Live ratio for this road
+            double segTrafficRatio = trafficRatioMatrix[fromIdx][toIdx];
 
-            // Penalize invalid paths
             if (segTime <= 0) segTime = Double.MAX_VALUE / 1000;
 
             double segDistKm = segDistMeters / 1000.0;
@@ -91,9 +87,19 @@ public class RouteProblem extends AbstractProblem {
             // Objective 1: Time
             totalTime += segTime;
 
-            // Objective 2 & 3: Cost and CO2 using the actual segment traffic ratio
+            // Fuel (shared base for cost and CO2)
             double segFuel = emissions.calcFuelLiters(segDistKm, payloadKg, segTrafficRatio, vehicleType);
-            totalCost += (segFuel * emissions.getDieselPrice());
+
+            // Objective 2: Cost = fuel cost + driver/idle cost from congestion
+            // When traffic is heavy (ratio > 1), driver spends more time = more labor cost
+            // This creates a REAL trade-off: a longer highway route may be
+            // cheaper (less idle time) but produce more CO2 (more distance)
+            double fuelCost = segFuel * emissions.getDieselPrice();
+            double driverCostPerHour = 500.0; // LKR per hour for driver labor
+            double driverLabor = (segTime / 3600.0) * driverCostPerHour;
+            totalCost += fuelCost + driverLabor;
+
+            // Objective 3: CO2 = pure emissions (distance + weight based only)
             totalCO2 += emissions.calcCo2Kg(segDistKm, payloadKg, segTrafficRatio, vehicleType);
         }
 

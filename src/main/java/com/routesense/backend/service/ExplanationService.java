@@ -7,19 +7,19 @@ public class ExplanationService {
 
     public String generateExplanation(double time, double cost, double co2, double baseTime, double baseCo2) {
 
-        // If greener than base but slower
         if (co2 < baseCo2 && time > baseTime) {
             double savedPct = ((baseCo2 - co2) / baseCo2) * 100.0;
             long extraMin = Math.round((time - baseTime) / 60.0);
-            return String.format("Reduces CO2 by %.1f%% with ~%d min time trade-off.", savedPct, Math.max(1, extraMin));
+            return String.format("Reduces CO2 by %.1f%% with ~%d min trade-off. Fuel cost: Rs %.0f.",
+                    savedPct, Math.max(1, extraMin), cost);
         }
 
-        // If this is the fastest (or tied fastest)
         if (time <= baseTime) {
-            return "This is the fastest available route.";
+            return String.format("Fastest available route. Fuel cost: Rs %.0f, CO2: %.2f kg.", cost, co2);
         }
 
-        return "Balanced route considering time, cost, and emissions.";
+        return String.format("Balanced route — Time: %.0f min, Cost: Rs %.0f, CO2: %.2f kg.",
+                time / 60.0, cost, co2);
     }
 
     public String generateComparisonExplanation(double timeDiff, double costDiff, double co2Diff) {

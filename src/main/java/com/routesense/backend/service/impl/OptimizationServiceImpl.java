@@ -2,6 +2,7 @@ package com.routesense.backend.service.impl;
 
 import com.routesense.backend.dto.RouteRequest;
 import com.routesense.backend.entity.RouteNode;
+import com.routesense.backend.optimization.RouteMatrixData;
 import com.routesense.backend.optimization.RouteProblem;
 import com.routesense.backend.service.ExplanationService;
 import com.routesense.backend.service.MapboxApiService;
@@ -11,11 +12,13 @@ import com.routesense.backend.util.Emissions;
 import org.moeaframework.Executor;
 import org.moeaframework.core.NondominatedPopulation;
 import org.moeaframework.core.Solution;
-import org.moeaframework.core.variable.Permutation;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import static com.routesense.backend.util.RouteUtils.*;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -37,9 +40,7 @@ public class OptimizationServiceImpl implements OptimizationService {
     @Autowired
     private MapboxApiService mapboxApiService;
 
-    private double[][] timeMatrix;
-    private double[][] distMatrix;
-    private double[][] trafficRatioMatrix;
+    private static final Logger log = LoggerFactory.getLogger(OptimizationServiceImpl.class);
 
     @Override
     public List<Map<String, Object>> findRoutesDynamic(RouteRequest request) {
@@ -48,6 +49,9 @@ public class OptimizationServiceImpl implements OptimizationService {
         int stopCount = (request.getStops() == null) ? 0 : request.getStops().size();
         List<RouteNode> allPoints = buildRoutePoints(request);
 
+        // ✅ Create matrices locally — thread-safe per request
+        RouteMatrixData matrix = new RouteMatrixData(allPoints.size());
+
         // 1) Build Matrix (Mapbox live vs base) OR fallback to OSRM static
         try {
             String coordString = buildCoordinateString(allPoints);
@@ -55,19 +59,18 @@ public class OptimizationServiceImpl implements OptimizationService {
             String liveJson = mapboxApiService.fetchMatrixTraffic(coordString);
             String baseJson = mapboxApiService.fetchMatrixBase(coordString);
 
-            parseMapboxMatrixLiveVsBase(liveJson, baseJson, allPoints);
+            parseMapboxMatrixLiveVsBase(liveJson, baseJson, allPoints, matrix);
 
         } catch (Exception e) {
-            System.err.println("Mapbox failed. Falling back to static OSRM. " + e.getMessage());
-            buildOsrmMatrix(allPoints, request.getTrafficFactor());
+            log.warn("Mapbox failed. Falling back to static OSRM.", e);
+            buildOsrmMatrix(allPoints, request.getTrafficFactor(), matrix);
         }
-
 
         // MODE 1: Direct Path (no stops)
         if (stopCount == 0) {
-            double time = timeMatrix[0][1];
-            double distKm = distMatrix[0][1] / 1000.0;
-            double ratio = trafficRatioMatrix[0][1];
+            double time = matrix.getTimeMatrix()[0][1];
+            double distKm = matrix.getDistMatrix()[0][1] / 1000.0;
+            double ratio = matrix.getTrafficRatioMatrix()[0][1];
 
             double fuel = emissions.calcFuelLiters(distKm, request.getWeightKg(), ratio, request.getVehicleType());
             double cost = fuel * emissions.getDieselPrice();
@@ -80,25 +83,27 @@ public class OptimizationServiceImpl implements OptimizationService {
             option.put("co2_emissions", co2);
             option.put("explanation", explanationService.generateExplanation(time, cost, co2, time, co2));
             option.put("route_sequence", fetchMapboxGeometry(List.of(allPoints.get(0), allPoints.get(1))));
-            option.put("avg_traffic_factor", calculateDirectTrafficFactor());
+            option.put("avg_traffic_factor", matrix.getTrafficRatioMatrix()[0][1]);
             results.add(option);
             return results;
         }
 
         // MODE 2: NSGA-II optimization (stops reorder)
         RouteProblem problem = new RouteProblem(
-                allPoints, timeMatrix, distMatrix, trafficRatioMatrix,
+                allPoints, matrix.getTimeMatrix(), matrix.getDistMatrix(), matrix.getTrafficRatioMatrix(),
                 request.getWeightKg(), request.getVehicleType(), emissions
         );
 
+        // Inside optimizeScheduledTrip method
         NondominatedPopulation pop = new Executor()
                 .withProblem(problem)
                 .withAlgorithm("NSGAII")
-                .withMaxEvaluations(500)
+                .withProperty("populationSize", 200)
+                .withMaxEvaluations(2000)
                 .run();
 
         if (pop == null || pop.isEmpty()) {
-            results.add(buildSimpleFallback(allPoints, request));
+            results.add(buildSimpleFallback(allPoints, request, matrix));
             return results;
         }
 
@@ -129,24 +134,32 @@ public class OptimizationServiceImpl implements OptimizationService {
             }
         }
 
+        // If traffic is low and NSGA-II finds < 3 routes, force generate random alternatives for the UI
+        int attempts = 0;
+        while (picked.size() < 3 && attempts < 20) {
+            Solution fallbackSol = problem.newSolution(); // Generates random permutation
+            problem.evaluate(fallbackSol); // Calculates Time, Cost, CO2
+            addIfUnique(picked, fallbackSol);
+            attempts++;
+        }
         // Main metrics (for comparison)
         double mainTime = main.getObjective(0);
         double mainCost = main.getObjective(1);
-        double mainCo2  = main.getObjective(2);
+        double mainCo2 = main.getObjective(2);
 
         // 5) Return routes: main labeled as "Fastest + Greenest", others are comparison routes
         for (Solution sol : picked) {
             double time = sol.getObjective(0);
             double cost = sol.getObjective(1);
-            double co2  = sol.getObjective(2);
+            double co2 = sol.getObjective(2);
 
             boolean isMain = sol.getVariable(0).toString().equals(main.getVariable(0).toString());
 
             Map<String, Object> routeOption = new HashMap<>();
-            routeOption.put("time_seconds", time); 
+            routeOption.put("time_seconds", time);
             routeOption.put("cost_currency", cost);
             routeOption.put("co2_emissions", co2);
-            routeOption.put("avg_traffic_factor", calculateAverageTrafficFactorForSolution(sol, allPoints));
+            routeOption.put("avg_traffic_factor", calculateAverageTrafficFactor(sol, allPoints, matrix));
 
             if (isMain) {
                 routeOption.put("mode", "Recommended (Fastest + Greenest)");
@@ -184,96 +197,17 @@ public class OptimizationServiceImpl implements OptimizationService {
         return results;
     }
 
-    // ------------------- helpers -------------------
+    // ===================== HELPERS =====================
 
-    private List<RouteNode> buildRoutePoints(RouteRequest request) {
-        List<RouteNode> points = new ArrayList<>();
-        points.add(new RouteNode(request.getStartName(), request.getStartLat(), request.getStartLon()));
-
-        if (request.getStops() != null) {
-            for (RouteRequest.Waypoint wp : request.getStops()) {
-                points.add(new RouteNode(wp.getName(), wp.getLatitude(), wp.getLongitude()));
-            }
-        }
-
-        points.add(new RouteNode(request.getEndName(), request.getEndLat(), request.getEndLon()));
-        return points;
-    }
-
-    private String buildCoordinateString(List<RouteNode> points) {
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < points.size(); i++) {
-            sb.append(points.get(i).getLongitude()).append(",").append(points.get(i).getLatitude());
-            if (i < points.size() - 1) sb.append(";");
-        }
-        return sb.toString();
-    }
-
-    private List<RouteNode> buildOrderedStops(Solution solution, List<RouteNode> allOrders) {
-        int[] permutation = ((Permutation) solution.getVariable(0)).toArray();
-
-        List<RouteNode> orderedStops = new ArrayList<>();
-        orderedStops.add(allOrders.get(0)); // start
-        for (int index : permutation) {
-            orderedStops.add(allOrders.get(index + 1)); // middle stops
-        }
-        orderedStops.add(allOrders.get(allOrders.size() - 1)); // end
-        return orderedStops;
-    }
-
-    private List<String> extractStopOrderNames(List<RouteNode> orderedStops) {
-        List<String> names = new ArrayList<>();
-        for (RouteNode n : orderedStops) names.add(n.getName());
-        return names;
-    }
-
-    private void addIfUnique(List<Solution> list, Solution candidate) {
-        if (candidate == null) return;
-        String candPerm = candidate.getVariable(0).toString();
-        for (Solution s : list) {
-            if (s.getVariable(0).toString().equals(candPerm)) return;
-        }
-        list.add(candidate);
-    }
-
-    private Solution pickKneeFastGreen(NondominatedPopulation pop) {
-        double minT = Double.MAX_VALUE, maxT = -Double.MAX_VALUE;
-        double minC = Double.MAX_VALUE, maxC = -Double.MAX_VALUE;
-
-        for (Solution s : pop) {
-            minT = Math.min(minT, s.getObjective(0));
-            maxT = Math.max(maxT, s.getObjective(0));
-            minC = Math.min(minC, s.getObjective(2));
-            maxC = Math.max(maxC, s.getObjective(2));
-        }
-
-        double tRange = Math.max(1e-9, maxT - minT);
-        double cRange = Math.max(1e-9, maxC - minC);
-
-        Solution best = null;
-        double bestScore = Double.MAX_VALUE;
-
-        for (Solution s : pop) {
-            double tNorm = (s.getObjective(0) - minT) / tRange;
-            double cNorm = (s.getObjective(2) - minC) / cRange;
-
-            double score = tNorm + cNorm; // equal weights
-            if (score < bestScore) {
-                bestScore = score;
-                best = s;
-            }
-        }
-        return best;
-    }
-
-    private void parseMapboxMatrixLiveVsBase(String liveJsonStr, String baseJsonStr, List<RouteNode> allPoints) {
+    /**
+     * Parses Mapbox live-traffic and base-traffic matrix responses,
+     * computing the traffic ratio per segment.
+     */
+    private void parseMapboxMatrixLiveVsBase(String liveJsonStr, String baseJsonStr,
+                                             List<RouteNode> allPoints, RouteMatrixData matrix) {
         try {
             ObjectMapper mapper = new ObjectMapper();
             int size = allPoints.size();
-
-            timeMatrix = new double[size][size];
-            distMatrix = new double[size][size];
-            trafficRatioMatrix = new double[size][size];
 
             JsonNode liveRoot = mapper.readTree(liveJsonStr);
             JsonNode baseRoot = mapper.readTree(baseJsonStr);
@@ -286,9 +220,9 @@ public class OptimizationServiceImpl implements OptimizationService {
                 for (int j = 0; j < size; j++) {
 
                     if (i == j) {
-                        timeMatrix[i][j] = 0.0;
-                        distMatrix[i][j] = 0.0;
-                        trafficRatioMatrix[i][j] = 1.0;
+                        matrix.getTimeMatrix()[i][j] = 0.0;
+                        matrix.getDistMatrix()[i][j] = 0.0;
+                        matrix.getTrafficRatioMatrix()[i][j] = 1.0;
                         continue;
                     }
 
@@ -298,9 +232,9 @@ public class OptimizationServiceImpl implements OptimizationService {
 
                     if (liveDurNode == null || baseDurNode == null || liveDistNode == null
                             || liveDurNode.isNull() || baseDurNode.isNull() || liveDistNode.isNull()) {
-                        timeMatrix[i][j] = Double.MAX_VALUE / 1000;
-                        distMatrix[i][j] = Double.MAX_VALUE / 1000;
-                        trafficRatioMatrix[i][j] = 1.0;
+                        matrix.getTimeMatrix()[i][j] = Double.MAX_VALUE / 1000;
+                        matrix.getDistMatrix()[i][j] = Double.MAX_VALUE / 1000;
+                        matrix.getTrafficRatioMatrix()[i][j] = 1.0;
                         continue;
                     }
 
@@ -309,36 +243,36 @@ public class OptimizationServiceImpl implements OptimizationService {
                     double dist = liveDistNode.asDouble();
 
                     if (liveTime <= 0 || baseTime <= 0 || dist <= 0) {
-                        timeMatrix[i][j] = Double.MAX_VALUE / 1000;
-                        distMatrix[i][j] = dist > 0 ? dist : Double.MAX_VALUE / 1000;
-                        trafficRatioMatrix[i][j] = 1.0;
+                        matrix.getTimeMatrix()[i][j] = Double.MAX_VALUE / 1000;
+                        matrix.getDistMatrix()[i][j] = dist > 0 ? dist : Double.MAX_VALUE / 1000;
+                        matrix.getTrafficRatioMatrix()[i][j] = 1.0;
                         continue;
                     }
 
                     double ratio = liveTime / baseTime;
 
-                    timeMatrix[i][j] = liveTime;
-                    distMatrix[i][j] = dist;
-                    trafficRatioMatrix[i][j] = Math.max(1.0, ratio);
+                    matrix.getTimeMatrix()[i][j] = liveTime;
+                    matrix.getDistMatrix()[i][j] = dist;
+                    matrix.getTrafficRatioMatrix()[i][j] = Math.max(1.0, ratio);
                 }
             }
         } catch (Exception e) {
-            System.err.println("Matrix parsing failed (Mapbox live vs base). " + e.getMessage());
+            log.error("Matrix parsing failed (Mapbox live vs base).", e);
         }
     }
 
-    private void buildOsrmMatrix(List<RouteNode> points, double trafficFactor) {
+    /**
+     * Fallback: builds the matrix using local OSRM with a static traffic factor.
+     */
+    private void buildOsrmMatrix(List<RouteNode> points, double trafficFactor, RouteMatrixData matrix) {
         int size = points.size();
-        timeMatrix = new double[size][size];
-        distMatrix = new double[size][size];
-        trafficRatioMatrix = new double[size][size];
 
         double safeFactor = (trafficFactor > 0) ? trafficFactor : 1.0;
 
         for (int i = 0; i < size; i++) {
             for (int j = 0; j < size; j++) {
                 if (i == j) {
-                    trafficRatioMatrix[i][j] = 1.0;
+                    matrix.getTrafficRatioMatrix()[i][j] = 1.0;
                     continue;
                 }
 
@@ -348,13 +282,16 @@ public class OptimizationServiceImpl implements OptimizationService {
                         safeFactor
                 );
 
-                timeMatrix[i][j] = m.durationSeconds();
-                distMatrix[i][j] = m.distanceMeters();
-                trafficRatioMatrix[i][j] = safeFactor;
+                matrix.getTimeMatrix()[i][j] = m.durationSeconds();
+                matrix.getDistMatrix()[i][j] = m.distanceMeters();
+                matrix.getTrafficRatioMatrix()[i][j] = safeFactor;
             }
         }
     }
 
+    /**
+     * Fetches full-path geometry from Mapbox Directions API for map rendering.
+     */
     private List<Map<String, Object>> fetchMapboxGeometry(List<RouteNode> orderedStops) {
         List<Map<String, Object>> fullPath = new ArrayList<>();
         try {
@@ -383,19 +320,23 @@ public class OptimizationServiceImpl implements OptimizationService {
             }
 
         } catch (Exception e) {
-            System.err.println("Mapbox Directions geometry failed: " + e.getMessage());
+            log.warn("Mapbox Directions geometry failed.", e);
         }
         return fullPath;
     }
 
-    private Map<String, Object> buildSimpleFallback(List<RouteNode> allPoints, RouteRequest request) {
+    /**
+     * Builds a simple fallback route when NSGA-II produces no results.
+     */
+    private Map<String, Object> buildSimpleFallback(List<RouteNode> allPoints, RouteRequest request,
+                                                    RouteMatrixData matrix) {
         List<RouteNode> ordered = new ArrayList<>(allPoints);
 
         double totalTime = 0, totalCost = 0, totalCo2 = 0;
         for (int i = 0; i < ordered.size() - 1; i++) {
-            double segTime = timeMatrix[i][i + 1];
-            double segDistKm = distMatrix[i][i + 1] / 1000.0;
-            double segRatio = trafficRatioMatrix[i][i + 1];
+            double segTime = matrix.getTimeMatrix()[i][i + 1];
+            double segDistKm = matrix.getDistMatrix()[i][i + 1] / 1000.0;
+            double segRatio = matrix.getTrafficRatioMatrix()[i][i + 1];
 
             double fuel = emissions.calcFuelLiters(segDistKm, request.getWeightKg(), segRatio, request.getVehicleType());
             totalTime += segTime;
@@ -414,33 +355,20 @@ public class OptimizationServiceImpl implements OptimizationService {
         return option;
     }
 
-    private double calculateAverageTrafficFactorForSolution(Solution solution, List<RouteNode> allOrders) {
-        int[] permutation = ((Permutation) solution.getVariable(0)).toArray();
+    private List<RouteNode> buildRoutePoints(RouteRequest request) {
+        List<RouteNode> points = new ArrayList<>();
+        points.add(new RouteNode(request.getStartName(), request.getStartLat(), request.getStartLon()));
 
-        List<Integer> pathIndices = new ArrayList<>();
-        pathIndices.add(0); // start
-
-        for (int index : permutation) {
-            pathIndices.add(index + 1); // middle stops
+        if (request.getStops() != null) {
+            for (RouteRequest.Waypoint wp : request.getStops()) {
+                points.add(new RouteNode(wp.getName(), wp.getLatitude(), wp.getLongitude()));
+            }
         }
 
-        pathIndices.add(allOrders.size() - 1); // end
-
-        double totalRatio = 0.0;
-        int segmentCount = 0;
-
-        for (int i = 0; i < pathIndices.size() - 1; i++) {
-            int fromIdx = pathIndices.get(i);
-            int toIdx = pathIndices.get(i + 1);
-
-            totalRatio += trafficRatioMatrix[fromIdx][toIdx];
-            segmentCount++;
-        }
-
-        return segmentCount > 0 ? totalRatio / segmentCount : 1.0;
+        points.add(new RouteNode(request.getEndName(), request.getEndLat(), request.getEndLon()));
+        return points;
     }
 
-    private double calculateDirectTrafficFactor() {
-        return trafficRatioMatrix[0][1];
-    }
+
+
 }

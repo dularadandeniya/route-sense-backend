@@ -11,10 +11,11 @@ import java.util.List;
 import java.util.Map;
 @RestController
 @RequestMapping("/api/routes")
-@CrossOrigin(origins = "http://localhost:5173")
 public class RouteController {
     @Autowired
     private OptimizationService optimizationService;
+
+    @Autowired
     private LocationService locationService;
 
     @PostMapping("/locations")

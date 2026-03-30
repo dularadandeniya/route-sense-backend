@@ -10,10 +10,4 @@ public class RouteNode {
     private double latitude;
     private double longitude;
 
-    public RouteNode() {
-
-    }
-
-    public void setCustomerName(String startName) {
-    }
 }
