@@ -49,8 +49,6 @@ public class ScheduledOptimizationServiceImpl implements ScheduledOptimizationSe
 
     private static final Logger log = LoggerFactory.getLogger(ScheduledOptimizationServiceImpl.class);
 
-    // ✅ REMOVED instance-level matrices — now created per-request for thread safety
-
     @Override
     public List<Map<String, Object>> optimizeScheduledTrip(ScheduledTrip trip) {
         List<Map<String, Object>> results = new ArrayList<>();
@@ -58,7 +56,6 @@ public class ScheduledOptimizationServiceImpl implements ScheduledOptimizationSe
 
         int stopCount = trip.getStops() == null ? 0 : trip.getStops().size();
 
-        // ✅ Create matrices locally — thread-safe per request
         RouteMatrixData matrix = new RouteMatrixData(allPoints.size());
 
         buildScheduledMatrices(allPoints, trip, matrix);
@@ -110,11 +107,10 @@ public class ScheduledOptimizationServiceImpl implements ScheduledOptimizationSe
             }
         }
 
-        // If traffic is low and NSGA-II finds < 3 routes, force generate random alternatives for the UI
         int attempts = 0;
         while (picked.size() < 3 && attempts < 20) {
-            Solution fallbackSol = problem.newSolution(); // Generates random permutation
-            problem.evaluate(fallbackSol); // Calculates Time, Cost, CO2
+            Solution fallbackSol = problem.newSolution();
+            problem.evaluate(fallbackSol);
             addIfUnique(picked, fallbackSol);
             attempts++;
         }
@@ -132,6 +128,7 @@ public class ScheduledOptimizationServiceImpl implements ScheduledOptimizationSe
 
             Map<String, Object> routeOption = new HashMap<>();
             routeOption.put("time_seconds", time);
+            routeOption.put("distance_meters", calculateTotalDistance(sol, allPoints, matrix));
             routeOption.put("cost_currency", cost);
             routeOption.put("co2_emissions", co2);
             routeOption.put("avg_traffic_factor", calculateAverageTrafficFactor(sol, allPoints, matrix));
@@ -169,14 +166,8 @@ public class ScheduledOptimizationServiceImpl implements ScheduledOptimizationSe
 
     // ===================== HELPERS =====================
 
-    /**
-     * Builds matrices using Mapbox base durations + ML-predicted traffic factors for scheduled trips.
-     * Falls back to OSRM if Mapbox fails.
-     */
     private void buildScheduledMatrices(List<RouteNode> points, ScheduledTrip trip, RouteMatrixData matrix) {
         int size = points.size();
-
-        // 1. Create the Cache (Memory Card)
         Map<String, Double> predictionCache = new HashMap<>();
 
         try {
@@ -201,14 +192,11 @@ public class ScheduledOptimizationServiceImpl implements ScheduledOptimizationSe
                     double distanceMeters = distances.get(i).get(j).asDouble();
                     double distanceKm = distanceMeters / 1000.0;
 
-                    // 2. Create a unique Key for this exact route segment
                     String segmentKey = points.get(i).getName() + "-" + points.get(j).getName();
-                    double predictedFactor = 1.0; // Default
+                    double predictedFactor = 1.0;
 
-                    // 3. Check the Cache BEFORE calling the ML API
                     if (predictionCache.containsKey(segmentKey)) {
                         predictedFactor = predictionCache.get(segmentKey);
-                        // System.out.println("Cache Hit for: " + segmentKey); // Optional debugging
                     } else {
                         TrafficPredictionRequest predReq = new TrafficPredictionRequest(
                                 points.get(i).getName(),
@@ -221,10 +209,7 @@ public class ScheduledOptimizationServiceImpl implements ScheduledOptimizationSe
                                 trip.getDepartureTime()
                         );
 
-                        // Call the API
                         predictedFactor = trafficForecastService.predictTrafficFactor(predReq);
-
-                        // 4. Save the new answer to the Cache
                         predictionCache.put(segmentKey, predictedFactor);
                     }
 
@@ -239,24 +224,27 @@ public class ScheduledOptimizationServiceImpl implements ScheduledOptimizationSe
         }
     }
 
-    /**
-     * Builds a direct or single-stop route when optimization is not needed.
-     */
     private List<Map<String, Object>> buildDirectOrSingleStopScheduledRoute(ScheduledTrip trip,
                                                                             List<RouteNode> allPoints,
                                                                             RouteMatrixData matrix) {
         List<Map<String, Object>> results = new ArrayList<>();
 
-        double totalTime = 0.0;
-        double totalCost = 0.0;
-        double totalCo2 = 0.0;
-        double totalFactor = 0.0;
-        int segmentCount = 0;
+        double totalTime     = 0.0;
+        double totalDist     = 0.0;
+        double totalCost     = 0.0;
+        double totalCo2      = 0.0;
+        double totalFactor   = 0.0;
+        int    segmentCount  = 0;
 
         for (int i = 0; i < allPoints.size() - 1; i++) {
-            double segTime = matrix.getTimeMatrix()[i][i + 1];
-            double segDistKm = matrix.getDistMatrix()[i][i + 1] / 1000.0;
-            double segRatio = matrix.getTrafficRatioMatrix()[i][i + 1];
+            double segTime    = matrix.getTimeMatrix()[i][i + 1];
+            double segDistM   = matrix.getDistMatrix()[i][i + 1];
+            double segDistKm  = segDistM / 1000.0;
+            double segRatio   = matrix.getTrafficRatioMatrix()[i][i + 1];
+
+            // Guard against corrupted matrix values
+            if (!Double.isFinite(segTime) || segTime <= 0)   segTime   = 0;
+            if (!Double.isFinite(segDistM) || segDistM <= 0) segDistM  = 0;
 
             double fuel = emissions.calcFuelLiters(
                     segDistKm,
@@ -265,45 +253,44 @@ public class ScheduledOptimizationServiceImpl implements ScheduledOptimizationSe
                     RouteRequest.VehicleType.valueOf(trip.getVehicleType())
             );
 
-            totalTime += segTime;
-            totalCost += fuel * emissions.getDieselPrice();
-            totalCo2 += emissions.calcCo2Kg(
+            totalTime  += segTime;
+            totalDist  += segDistM;
+            totalCost  += fuel * emissions.getDieselPrice();
+            totalCo2   += emissions.calcCo2Kg(
                     segDistKm,
                     trip.getPayloadKg(),
                     segRatio,
                     RouteRequest.VehicleType.valueOf(trip.getVehicleType())
             );
-
             totalFactor += segRatio;
             segmentCount++;
         }
 
         Map<String, Object> route = new HashMap<>();
-        route.put("mode", "Recommended (Scheduled Direct)");
-        route.put("time_seconds", totalTime);
-        route.put("cost_currency", totalCost);
-        route.put("co2_emissions", totalCo2);
+        route.put("mode",               "Recommended (Scheduled Direct)");
+        route.put("time_seconds",       totalTime);
+        route.put("distance_meters",    totalDist);
+        route.put("cost_currency",      totalCost);
+        route.put("co2_emissions",      totalCo2);
         route.put("avg_traffic_factor", segmentCount == 0 ? 1.0 : totalFactor / segmentCount);
-        route.put("explanation", explanationService.generateExplanation(totalTime, totalCost, totalCo2, totalTime, totalCo2));
-        route.put("route_sequence", fetchMapboxGeometry(allPoints));
-        route.put("stop_order", extractStopOrderNames(allPoints));
+        route.put("explanation",        explanationService.generateExplanation(
+                totalTime, totalCost, totalCo2, totalTime, totalCo2));
+        route.put("route_sequence",     fetchMapboxGeometry(allPoints));
+        route.put("stop_order",         extractStopOrderNames(allPoints));
 
         results.add(route);
         return results;
     }
 
-    /**
-     * Fallback: builds the matrix using local OSRM with a static traffic factor.
-     */
     private void buildOsrmMatrix(List<RouteNode> points, double trafficFactor, RouteMatrixData matrix) {
         int size = points.size();
 
         for (int i = 0; i < size; i++) {
             for (int j = 0; j < size; j++) {
                 if (i == j) {
-                    matrix.getTimeMatrix()[i][j] = 0.0;
-                    matrix.getDistMatrix()[i][j] = 0.0;
-                    matrix.getTrafficRatioMatrix()[i][j] = 1.0;
+                    matrix.getTimeMatrix()[i][j]         = 0.0;
+                    matrix.getDistMatrix()[i][j]          = 0.0;
+                    matrix.getTrafficRatioMatrix()[i][j]  = 1.0;
                     continue;
                 }
 
@@ -313,16 +300,13 @@ public class ScheduledOptimizationServiceImpl implements ScheduledOptimizationSe
                         trafficFactor
                 );
 
-                matrix.getTimeMatrix()[i][j] = m.durationSeconds() > 0 ? m.durationSeconds() : Double.MAX_VALUE / 1000;
-                matrix.getDistMatrix()[i][j] = m.distanceMeters() > 0 ? m.distanceMeters() : Double.MAX_VALUE / 1000;
+                matrix.getTimeMatrix()[i][j]        = (m.durationSeconds() > 0) ? m.durationSeconds() : 0.0;
+                matrix.getDistMatrix()[i][j]         = (m.distanceMeters() > 0)  ? m.distanceMeters()  : 0.0;
                 matrix.getTrafficRatioMatrix()[i][j] = trafficFactor;
             }
         }
     }
 
-    /**
-     * Fetches full-path geometry from Mapbox Directions API for map rendering.
-     */
     private List<Map<String, Object>> fetchMapboxGeometry(List<RouteNode> orderedStops) {
         List<Map<String, Object>> fullPath = new ArrayList<>();
         try {
@@ -359,5 +343,23 @@ public class ScheduledOptimizationServiceImpl implements ScheduledOptimizationSe
 
         points.add(new RouteNode(trip.getEndName(), trip.getEndLat(), trip.getEndLon()));
         return points;
+    }
+
+    private double calculateTotalDistance(Solution sol, List<RouteNode> allPoints, RouteMatrixData matrix) {
+        try {
+            List<RouteNode> ordered = buildOrderedStops(sol, allPoints);
+            double total = 0.0;
+            for (int i = 0; i < ordered.size() - 1; i++) {
+                int from = allPoints.indexOf(ordered.get(i));
+                int to   = allPoints.indexOf(ordered.get(i + 1));
+                if (from >= 0 && to >= 0) {
+                    double d = matrix.getDistMatrix()[from][to];
+                    if (Double.isFinite(d) && d > 0) total += d;
+                }
+            }
+            return total;
+        } catch (Exception e) {
+            return 0.0;
+        }
     }
 }

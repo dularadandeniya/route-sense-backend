@@ -95,11 +95,9 @@ public class RouteProblem extends AbstractProblem {
             // This creates a REAL trade-off: a longer highway route may be
             // cheaper (less idle time) but produce more CO2 (more distance)
             double fuelCost = segFuel * emissions.getDieselPrice();
-            double driverCostPerHour = 500.0; // LKR per hour for driver labor
-            double driverLabor = (segTime / 3600.0) * driverCostPerHour;
-            totalCost += fuelCost + driverLabor;
+            totalCost += fuelCost;
 
-            // Objective 3: CO2 = pure emissions (distance + weight based only)
+            // Objective 3: CO2 = emissions factoring distance, weight, and traffic congestion
             totalCO2 += emissions.calcCo2Kg(segDistKm, payloadKg, segTrafficRatio, vehicleType);
         }
 

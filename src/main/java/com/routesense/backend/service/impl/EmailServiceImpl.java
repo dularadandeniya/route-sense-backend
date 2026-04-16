@@ -19,15 +19,25 @@ public class EmailServiceImpl implements EmailService {
 
     @Override
     public void sendRouteEmail(EmailRequest request) {
+        String mapsSection = (request.getGoogleMapsUrl() != null && !request.getGoogleMapsUrl().isEmpty())
+                ? "\n--- Open in Google Maps ---\n" + request.getGoogleMapsUrl() + "\n\n"
+                : "";
+
+        String tripLabel = (request.getTripName() != null && !request.getTripName().isEmpty())
+                ? request.getTripName()
+                : "Your Trip";
+
         String emailBody =
                 "Hello Driver,\n\n" +
                         "A new optimized route has been assigned to you.\n\n" +
+                        "Trip: " + tripLabel + "\n\n" +
                         "--- Route Summary ---\n" +
                         "Route Strategy: " + request.getMode() + "\n" +
-                        "Estimated Time: " + request.getTime() + " minutes\n\n" +
+                        "Estimated Time: " + request.getTime() + "\n\n" +
                         "--- Stop Sequence ---\n" +
                         request.getStops() + "\n\n" +
-                        "Please follow this sequence for the best efficiency.\n" +
+                        mapsSection +
+                        "Tap the Google Maps link above to open turn-by-turn navigation.\n\n" +
                         "Drive safely!\n\n" +
                         "Best Regards,\n" +
                         "RouteSense Dispatch Team";
@@ -35,7 +45,7 @@ public class EmailServiceImpl implements EmailService {
         CreateEmailOptions params = CreateEmailOptions.builder()
                 .from("RouteSense <onboarding@resend.dev>")
                 .to(request.getDriverEmail())
-                .subject("New Route Assigned: " + request.getMode())
+                .subject("Route Assigned: " + tripLabel + " (" + request.getMode() + ")")
                 .text(emailBody)
                 .build();
 

@@ -10,8 +10,7 @@ import com.routesense.backend.service.ScheduledTripService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 @Service
 public class ScheduledTripServiceImpl implements ScheduledTripService {
@@ -79,5 +78,40 @@ public class ScheduledTripServiceImpl implements ScheduledTripService {
                 .orElseThrow(() -> new RuntimeException("Scheduled trip not found"));
 
         return scheduledOptimizationService.optimizeScheduledTrip(trip);
+    }
+
+    @Override
+    public Map<String, Object> getScheduleById(Long id) {
+        ScheduledTrip trip = scheduledTripRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Trip not found: " + id));
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("id",            trip.getId());
+        result.put("tripName",      trip.getTripName());
+        result.put("startName",     trip.getStartName());
+        result.put("startLat",      trip.getStartLat());
+        result.put("startLon",      trip.getStartLon());
+        result.put("endName",       trip.getEndName());
+        result.put("endLat",        trip.getEndLat());
+        result.put("endLon",        trip.getEndLon());
+        result.put("departureTime", trip.getDepartureTime().toString());
+        result.put("vehicleType",   trip.getVehicleType());
+        result.put("weightKg",      trip.getPayloadKg());
+        result.put("status",        trip.getStatus());
+
+        List<Map<String, Object>> stops = new ArrayList<>();
+        if (trip.getStops() != null) {
+            trip.getStops().stream()
+                    .sorted(Comparator.comparingInt(ScheduledTripStop::getSeq))
+                    .forEach(s -> {
+                        Map<String, Object> stop = new HashMap<>();
+                        stop.put("name", s.getStopName());
+                        stop.put("lat",  s.getStopLat());
+                        stop.put("lon",  s.getStopLon());
+                        stops.add(stop);
+                    });
+        }
+        result.put("stops", stops);
+        return result;
     }
 }

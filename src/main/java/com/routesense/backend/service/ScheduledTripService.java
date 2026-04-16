@@ -10,4 +10,6 @@ public interface ScheduledTripService {
     ScheduledTripResponse createSchedule(ScheduleTripRequest request);
     List<ScheduledTripResponse> getAllSchedules();
     List<Map<String, Object>> optimizeScheduledTrip(Long id);
+
+    Map<String, Object> getScheduleById(Long id);
 }

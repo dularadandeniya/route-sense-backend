@@ -12,4 +12,6 @@ public class EmailRequest {
     private String mode;
     private String time;
     private String stops;
+    private String tripName;
+    private String googleMapsUrl;
 }

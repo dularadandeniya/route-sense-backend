@@ -18,7 +18,7 @@ public class MapboxApiService {
     private final Path quotaFile = Paths.get("mapbox_quota.txt");
 
     // guardrail for Matrix elements/day (simple project-level limiter)
-    private final int dailyLimit = 2000;
+    private final int dailyLimit = 3000;
 
     /**
      * Matrix API (durations + distances) using traffic profile (driving-traffic)
