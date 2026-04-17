@@ -17,29 +17,16 @@ public class MapboxApiService {
     private final RestTemplate restTemplate = new RestTemplate();
     private final Path quotaFile = Paths.get("mapbox_quota.txt");
 
-    // guardrail for Matrix elements/day (simple project-level limiter)
     private final int dailyLimit = 3000;
 
-    /**
-     * Matrix API (durations + distances) using traffic profile (driving-traffic)
-     * coordinates format: "lon,lat;lon,lat;..."
-     */
     public String fetchMatrixTraffic(String coordinates) throws Exception {
         return fetchMatrixInternal("driving-traffic", coordinates);
     }
 
-    /**
-     * Matrix API (durations) using base profile (driving) - NO live traffic.
-     * We use this to compute: trafficRatio = liveDuration / baseDuration.
-     */
     public String fetchMatrixBase(String coordinates) throws Exception {
         return fetchMatrixInternal("driving", coordinates);
     }
 
-    /**
-     * Shared Matrix request handler.
-     * NOTE: both endpoints count toward usage since both are paid/free-metered calls.
-     */
     private String fetchMatrixInternal(String profile, String coordinates) throws Exception {
         int currentUsage = getCount();
 
@@ -60,10 +47,7 @@ public class MapboxApiService {
         return response;
     }
 
-    /**
-     * Directions API to fetch a FULL PATH geometry in GeoJSON (easy parsing)
-     * Call this ONCE per chosen route (NOT per segment).
-     */
+
     public String fetchDirectionsGeoJson(String coordinates) throws Exception {
         String url = "https://api.mapbox.com/directions/v5/mapbox/driving-traffic/"
                 + coordinates

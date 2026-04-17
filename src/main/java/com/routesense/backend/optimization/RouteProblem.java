@@ -16,10 +16,10 @@ public class RouteProblem extends AbstractProblem {
     private final List<RouteNode> orders;
     private final double[][] timeMatrix;
     private final double[][] distMatrix;
-    private final double[][] trafficRatioMatrix; // New: Segment-specific traffic ratios
+    private final double[][] trafficRatioMatrix;
     private final double payloadKg;
     private final RouteRequest.VehicleType vehicleType;
-    private final Emissions emissions; // Injected service for math
+    private final Emissions emissions;
 
     public RouteProblem(List<RouteNode> orders,
                         double[][] timeMatrix,
@@ -84,20 +84,17 @@ public class RouteProblem extends AbstractProblem {
 
             double segDistKm = segDistMeters / 1000.0;
 
-            // Objective 1: Time
+            // Objective 1 Time
             totalTime += segTime;
 
             // Fuel (shared base for cost and CO2)
             double segFuel = emissions.calcFuelLiters(segDistKm, payloadKg, segTrafficRatio, vehicleType);
 
-            // Objective 2: Cost = fuel cost + driver/idle cost from congestion
-            // When traffic is heavy (ratio > 1), driver spends more time = more labor cost
-            // This creates a REAL trade-off: a longer highway route may be
-            // cheaper (less idle time) but produce more CO2 (more distance)
+            // Objective 2 Cost = fuel cost x diesel price
             double fuelCost = segFuel * emissions.getDieselPrice();
             totalCost += fuelCost;
 
-            // Objective 3: CO2 = emissions factoring distance, weight, and traffic congestion
+            // Objective 3 CO2 = emissions factoring distance, weight, and traffic congestion
             totalCO2 += emissions.calcCo2Kg(segDistKm, payloadKg, segTrafficRatio, vehicleType);
         }
 

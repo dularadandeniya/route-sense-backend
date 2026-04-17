@@ -26,19 +26,19 @@ public class AuthTokenFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
         try {
-            // 1. Get JWT from the "Authorization" header
+            // Get JWT from Authorization
             String jwt = parseJwt(request);
 
-            // 2. Validate JWT
+            // Validate JWT
             if (jwt != null && jwtUtils.validateJwtToken(jwt)) {
 
-                // 3. Get Username from JWT
+                // Get Username from JWT
                 String username = jwtUtils.getUserNameFromJwtToken(jwt);
 
-                // 4. Load User Details from DB
+                // Load User Details from DB
                 UserDetails userDetails = userDetailsService.loadUserByUsername(username);
 
-                // 5. Tell Spring Security "User is Valid"
+                // Spring Security show whether user is valid or not
                 UsernamePasswordAuthenticationToken authentication =
                         new UsernamePasswordAuthenticationToken(
                                 userDetails,
@@ -56,12 +56,12 @@ public class AuthTokenFilter extends OncePerRequestFilter {
         filterChain.doFilter(request, response);
     }
 
-    // Helper: Extracts "Bearer <token>" from the header
+    // Extracts token from the header
     private String parseJwt(HttpServletRequest request) {
         String headerAuth = request.getHeader("Authorization");
 
         if (headerAuth != null && headerAuth.startsWith("Bearer ")) {
-            return headerAuth.substring(7); // Remove "Bearer " prefix
+            return headerAuth.substring(7);
         }
 
         return null;

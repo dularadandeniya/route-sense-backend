@@ -29,7 +29,7 @@ import java.util.Map;
 public class OptimizationServiceImpl implements OptimizationService {
 
     @Autowired
-    private OsrmService osrmService; // kept for fallback matrix if Mapbox fails
+    private OsrmService osrmService;
 
     @Autowired
     private ExplanationService explanationService;
@@ -49,10 +49,10 @@ public class OptimizationServiceImpl implements OptimizationService {
         int stopCount = (request.getStops() == null) ? 0 : request.getStops().size();
         List<RouteNode> allPoints = buildRoutePoints(request);
 
-        // ✅ Create matrices locally — thread-safe per request
+        //  Create matrices locally
         RouteMatrixData matrix = new RouteMatrixData(allPoints.size());
 
-        // 1) Build Matrix (Mapbox live vs base) OR fallback to OSRM static
+        //  Build Matrix or fall back for osrm
         try {
             String coordString = buildCoordinateString(allPoints);
 
@@ -66,7 +66,7 @@ public class OptimizationServiceImpl implements OptimizationService {
             buildOsrmMatrix(allPoints, request.getTrafficFactor(), matrix);
         }
 
-        // MODE 1: Direct Path (no stops)
+        // MODE 1: Direct Path without stops
         if (stopCount == 0) {
             double time = matrix.getTimeMatrix()[0][1];
             double distKm = matrix.getDistMatrix()[0][1] / 1000.0;
@@ -88,13 +88,12 @@ public class OptimizationServiceImpl implements OptimizationService {
             return results;
         }
 
-        // MODE 2: NSGA-II optimization (stops reorder)
+        // MODE 2: NSGA-II optimization with stops
         RouteProblem problem = new RouteProblem(
                 allPoints, matrix.getTimeMatrix(), matrix.getDistMatrix(), matrix.getTrafficRatioMatrix(),
                 request.getWeightKg(), request.getVehicleType(), emissions
         );
 
-        // Inside optimizeScheduledTrip method
         NondominatedPopulation pop = new Executor()
                 .withProblem(problem)
                 .withAlgorithm("NSGAII")
@@ -107,7 +106,7 @@ public class OptimizationServiceImpl implements OptimizationService {
             return results;
         }
 
-        // 2) Fastest + Greenest
+        //  Fastest + Greenest
         Solution fastest = null;
         Solution greenest = null;
 
@@ -116,17 +115,15 @@ public class OptimizationServiceImpl implements OptimizationService {
             if (greenest == null || s.getObjective(2) < greenest.getObjective(2)) greenest = s;
         }
 
-        // 3) Main = knee between time and CO2
+        //  Main time between time and CO2
         Solution main = pickKneeFastGreen(pop);
         if (main == null) main = fastest;
 
-        // 4) Pick 1 main + 2 comparisons (unique)
         List<Solution> picked = new ArrayList<>();
         addIfUnique(picked, main);
         addIfUnique(picked, fastest);
         addIfUnique(picked, greenest);
 
-        // If duplicates, fill remaining from population
         if (picked.size() < 3) {
             for (Solution s : pop) {
                 if (picked.size() >= 3) break;
@@ -134,11 +131,11 @@ public class OptimizationServiceImpl implements OptimizationService {
             }
         }
 
-        // If traffic is low and NSGA-II finds < 3 routes, force generate random alternatives for the UI
+
         int attempts = 0;
         while (picked.size() < 3 && attempts < 20) {
-            Solution fallbackSol = problem.newSolution(); // Generates random permutation
-            problem.evaluate(fallbackSol); // Calculates Time, Cost, CO2
+            Solution fallbackSol = problem.newSolution();
+            problem.evaluate(fallbackSol);
             addIfUnique(picked, fallbackSol);
             attempts++;
         }
@@ -147,7 +144,7 @@ public class OptimizationServiceImpl implements OptimizationService {
         double mainCost = main.getObjective(1);
         double mainCo2 = main.getObjective(2);
 
-        // 5) Return routes: main labeled as "Fastest + Greenest", others are comparison routes
+        //
         for (Solution sol : picked) {
             double time = sol.getObjective(0);
             double cost = sol.getObjective(1);
@@ -184,11 +181,11 @@ public class OptimizationServiceImpl implements OptimizationService {
                 );
             }
 
-            // Geometry only fetched for these up-to-3 routes
+
             List<RouteNode> orderedStops = buildOrderedStops(sol, allPoints);
             routeOption.put("route_sequence", fetchMapboxGeometry(orderedStops));
 
-            // Optional: return stop order for research display
+
             routeOption.put("stop_order", extractStopOrderNames(orderedStops));
 
             results.add(routeOption);
@@ -197,12 +194,7 @@ public class OptimizationServiceImpl implements OptimizationService {
         return results;
     }
 
-    // ===================== HELPERS =====================
 
-    /**
-     * Parses Mapbox live-traffic and base-traffic matrix responses,
-     * computing the traffic ratio per segment.
-     */
     private void parseMapboxMatrixLiveVsBase(String liveJsonStr, String baseJsonStr,
                                              List<RouteNode> allPoints, RouteMatrixData matrix) {
         try {
@@ -261,9 +253,7 @@ public class OptimizationServiceImpl implements OptimizationService {
         }
     }
 
-    /**
-     * Fallback: builds the matrix using local OSRM with a static traffic factor.
-     */
+
     private void buildOsrmMatrix(List<RouteNode> points, double trafficFactor, RouteMatrixData matrix) {
         int size = points.size();
 
@@ -289,9 +279,7 @@ public class OptimizationServiceImpl implements OptimizationService {
         }
     }
 
-    /**
-     * Fetches full-path geometry from Mapbox Directions API for map rendering.
-     */
+
     private List<Map<String, Object>> fetchMapboxGeometry(List<RouteNode> orderedStops) {
         List<Map<String, Object>> fullPath = new ArrayList<>();
         try {
@@ -305,7 +293,7 @@ public class OptimizationServiceImpl implements OptimizationService {
             if (!routes.isArray() || routes.isEmpty()) return fullPath;
 
             JsonNode geometry = routes.get(0).path("geometry");
-            JsonNode coords = geometry.path("coordinates"); // [[lon,lat],[lon,lat],...]
+            JsonNode coords = geometry.path("coordinates");
 
             if (!coords.isArray()) return fullPath;
 
@@ -325,9 +313,7 @@ public class OptimizationServiceImpl implements OptimizationService {
         return fullPath;
     }
 
-    /**
-     * Builds a simple fallback route when NSGA-II produces no results.
-     */
+
     private Map<String, Object> buildSimpleFallback(List<RouteNode> allPoints, RouteRequest request,
                                                     RouteMatrixData matrix) {
         List<RouteNode> ordered = new ArrayList<>(allPoints);

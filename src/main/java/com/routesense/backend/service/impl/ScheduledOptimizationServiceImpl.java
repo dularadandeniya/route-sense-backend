@@ -164,7 +164,6 @@ public class ScheduledOptimizationServiceImpl implements ScheduledOptimizationSe
         return results;
     }
 
-    // ===================== HELPERS =====================
 
     private void buildScheduledMatrices(List<RouteNode> points, ScheduledTrip trip, RouteMatrixData matrix) {
         int size = points.size();
@@ -242,7 +241,7 @@ public class ScheduledOptimizationServiceImpl implements ScheduledOptimizationSe
             double segDistKm  = segDistM / 1000.0;
             double segRatio   = matrix.getTrafficRatioMatrix()[i][i + 1];
 
-            // Guard against corrupted matrix values
+            // Guard against corrupted values
             if (!Double.isFinite(segTime) || segTime <= 0)   segTime   = 0;
             if (!Double.isFinite(segDistM) || segDistM <= 0) segDistM  = 0;
 

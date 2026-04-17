@@ -9,9 +9,7 @@ import org.moeaframework.core.variable.Permutation;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Shared utility methods used by both real-time and scheduled optimization services.
- */
+
 public final class RouteUtils {
 
     private RouteUtils() {}

@@ -5,9 +5,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 @Service
-public class Emissions { // Removed 'final'
-
-    // Removed the private constructor
+public class Emissions {
 
     private static final double CO2_PER_LITER_DIESEL = 2.68;
 
@@ -18,7 +16,6 @@ public class Emissions { // Removed 'final'
         return dieselPrice;
     }
 
-    // Removed 'static' from all methods below
     public double calcCo2Kg(double distanceKm, double payloadKg, double trafficFactor, RouteRequest.VehicleType type) {
         double fuelLiters = calcFuelLiters(distanceKm, payloadKg, trafficFactor, type);
         return fuelLiters * CO2_PER_LITER_DIESEL;

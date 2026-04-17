@@ -21,11 +21,9 @@ public class OsrmService {
 
     public record RouteMetrics(double durationSeconds, double distanceMeters) {}
 
-    /**
-     * FETCHES SINGLE ROUTE WITH GEOMETRY (For Mode 2 "Curved Roads")
-     */
+
     public Map<String, Object> getRoute(double lat1, double lon1, double lat2, double lon2) {
-        // Construct standard OSRM URL: /lon,lat;lon,lat
+        // Construct standard OSRM
         String coordinates = lon1 + "," + lat1 + ";" + lon2 + "," + lat2;
 
         // request "polyline" explicitly for the decoder
@@ -51,13 +49,10 @@ public class OsrmService {
         return null;
     }
 
-    /**
-     * FETCHES ALTERNATIVES (For Mode 1)
-     */
+
     public List<Map<String, Object>> getRouteAlternatives(double lat1, double lon1, double lat2, double lon2) {
         String coordinates = lon1 + "," + lat1 + ";" + lon2 + "," + lat2;
 
-        // FIXED: changed geojson -> polyline so it works with decodePolyline()
         String url = OSRM_BASE_URL + coordinates + "?alternatives=true&overview=full&geometries=polyline";
 
         List<Map<String, Object>> routeOptions = new ArrayList<>();
@@ -83,9 +78,7 @@ public class OsrmService {
         return routeOptions;
     }
 
-    /**
-     * LIGHTWEIGHT METRICS (For Optimization Loop)
-     */
+
     public RouteMetrics getRouteMetrics(double lat1, double lon1, double lat2, double lon2, double trafficFactor) {
         String coordinates = lon1 + "," + lat1 + ";" + lon2 + "," + lat2;
         String url = OSRM_BASE_URL + coordinates + "?overview=false"; // No geometry needed here
