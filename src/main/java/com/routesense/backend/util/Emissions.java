@@ -50,6 +50,8 @@ public class Emissions {
         double weightFactor = 1.0 + 0.4 * (safePayload / p.maxPayloadKg);
         weightFactor = clamp(weightFactor, 1.0, 1.4);
 
-        return distanceKm * p.baseLitersPerKm * weightFactor * safeTraffic;
+        double trafficFuelPenalty = 1.0 + ((safeTraffic - 1.0) * 0.25);
+
+        return distanceKm * p.baseLitersPerKm() * weightFactor * trafficFuelPenalty;
     }
 }

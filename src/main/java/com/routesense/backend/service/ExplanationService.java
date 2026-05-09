@@ -18,7 +18,7 @@ public class ExplanationService {
             return String.format("Fastest available route. Fuel cost: Rs %.0f, CO2: %.2f kg.", cost, co2);
         }
 
-        return String.format("Balanced route — Time: %.0f min, Cost: Rs %.0f, CO2: %.2f kg.",
+        return String.format("Balanced route - Time: %.0f min, Cost: Rs %.0f, CO2: %.2f kg.",
                 time / 60.0, cost, co2);
     }
 
@@ -39,7 +39,7 @@ public class ExplanationService {
         if (co2Diff < 0) {
             sb.append(", and reduces CO2 by ").append(String.format("%.2f", Math.abs(co2Diff))).append(" kg.");
         } else if (co2Diff > 0) {
-            sb.append(", but emits ").append(String.format("%.2f", co2Diff)).append(" kg more CO2.");
+            sb.append(", and emits ").append(String.format("%.2f", co2Diff)).append(" kg more CO2.");
         } else {
             sb.append(".");
         }
