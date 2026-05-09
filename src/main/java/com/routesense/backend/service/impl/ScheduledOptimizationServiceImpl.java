@@ -84,12 +84,30 @@ public class ScheduledOptimizationServiceImpl implements ScheduledOptimizationSe
             return buildDirectOrSingleStopScheduledRoute(trip, allPoints, matrix);
         }
 
+//        Solution fastest = null;
+//        Solution greenest = null;
+//
+//        for (Solution s : pop) {
+//            if (fastest == null || s.getObjective(0) < fastest.getObjective(0)) fastest = s;
+//            if (greenest == null || s.getObjective(2) < greenest.getObjective(2)) greenest = s;
+//        }
+
         Solution fastest = null;
+        Solution cheapest = null;
         Solution greenest = null;
 
         for (Solution s : pop) {
-            if (fastest == null || s.getObjective(0) < fastest.getObjective(0)) fastest = s;
-            if (greenest == null || s.getObjective(2) < greenest.getObjective(2)) greenest = s;
+            if (fastest == null || s.getObjective(0) < fastest.getObjective(0)) {
+                fastest = s;
+            }
+
+            if (cheapest == null || s.getObjective(1) < cheapest.getObjective(1)) {
+                cheapest = s;
+            }
+
+            if (greenest == null || s.getObjective(2) < greenest.getObjective(2)) {
+                greenest = s;
+            }
         }
 
         Solution main = pickKneeFastGreen(pop);
@@ -98,17 +116,18 @@ public class ScheduledOptimizationServiceImpl implements ScheduledOptimizationSe
         List<Solution> picked = new ArrayList<>();
         addIfUnique(picked, main);
         addIfUnique(picked, fastest);
+        addIfUnique(picked, cheapest);
         addIfUnique(picked, greenest);
 
-        if (picked.size() < 3) {
+        if (picked.size() < 4) {
             for (Solution s : pop) {
-                if (picked.size() >= 3) break;
+                if (picked.size() >= 4) break;
                 addIfUnique(picked, s);
             }
         }
 
         int attempts = 0;
-        while (picked.size() < 3 && attempts < 20) {
+        while (picked.size() < 4 && attempts < 20) {
             Solution fallbackSol = problem.newSolution();
             problem.evaluate(fallbackSol);
             addIfUnique(picked, fallbackSol);
@@ -119,12 +138,34 @@ public class ScheduledOptimizationServiceImpl implements ScheduledOptimizationSe
         double mainCost = main.getObjective(1);
         double mainCo2 = main.getObjective(2);
 
+        Solution fastestAlternative = null;
+        Solution cheapestAlternative = null;
+        Solution greenestAlternative = null;
+
+        for (Solution s : picked) {
+            if (sameRoute(s, main)) {
+                continue;
+            }
+
+            if (fastestAlternative == null || s.getObjective(0) < fastestAlternative.getObjective(0)) {
+                fastestAlternative = s;
+            }
+
+            if (cheapestAlternative == null || s.getObjective(1) < cheapestAlternative.getObjective(1)) {
+                cheapestAlternative = s;
+            }
+
+            if (greenestAlternative == null || s.getObjective(2) < greenestAlternative.getObjective(2)) {
+                greenestAlternative = s;
+            }
+        }
+
         for (Solution sol : picked) {
             double time = sol.getObjective(0);
             double cost = sol.getObjective(1);
             double co2 = sol.getObjective(2);
 
-            boolean isMain = sol.getVariable(0).toString().equals(main.getVariable(0).toString());
+            boolean isMain = sameRoute(sol, main);
 
             Map<String, Object> routeOption = new HashMap<>();
             routeOption.put("time_seconds", time);
@@ -134,15 +175,18 @@ public class ScheduledOptimizationServiceImpl implements ScheduledOptimizationSe
             routeOption.put("avg_traffic_factor", calculateAverageTrafficFactor(sol, allPoints, matrix));
 
             if (isMain) {
-                routeOption.put("mode", "Recommended (Scheduled Best)");
+                routeOption.put("mode", "Recommended (Fastest + Greenest");
                 routeOption.put("explanation",
                         explanationService.generateExplanation(time, cost, co2, mainTime, mainCo2));
             } else {
-                String mode = "Comparison (Scheduled Alternative)";
-                if (fastest != null && sol.getVariable(0).toString().equals(fastest.getVariable(0).toString())) {
-                    mode = "Comparison (Fastest)";
-                } else if (greenest != null && sol.getVariable(0).toString().equals(greenest.getVariable(0).toString())) {
-                    mode = "Comparison (Greenest)";
+                String mode = "Comparison (Scheduled Balanced)";
+
+                if (sameRoute(sol, fastestAlternative)) {
+                    mode = "Comparison (Scheduled Fastest Alternative)";
+                } else if (sameRoute(sol, cheapestAlternative)) {
+                    mode = "Comparison (Scheduled Cheapest Alternative)";
+                } else if (sameRoute(sol, greenestAlternative)) {
+                    mode = "Comparison (Scheduled Greenest Alternative)";
                 }
 
                 routeOption.put("mode", mode);
@@ -360,5 +404,23 @@ public class ScheduledOptimizationServiceImpl implements ScheduledOptimizationSe
         } catch (Exception e) {
             return 0.0;
         }
+    }
+
+    private boolean sameRoute(Solution a, Solution b) {
+        if (a == null || b == null) {
+            return false;
+        }
+
+        if (a.getNumberOfVariables() != b.getNumberOfVariables()) {
+            return false;
+        }
+
+        for (int i = 0; i < a.getNumberOfVariables(); i++) {
+            if (!a.getVariable(i).toString().equals(b.getVariable(i).toString())) {
+                return false;
+            }
+        }
+
+        return true;
     }
 }
