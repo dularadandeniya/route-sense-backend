@@ -175,7 +175,7 @@ public class ScheduledOptimizationServiceImpl implements ScheduledOptimizationSe
             routeOption.put("avg_traffic_factor", calculateAverageTrafficFactor(sol, allPoints, matrix));
 
             if (isMain) {
-                routeOption.put("mode", "Recommended (Fastest + Greenest");
+                routeOption.put("mode", "Recommended (Fastest + Greenest)");
                 routeOption.put("explanation",
                         explanationService.generateExplanation(time, cost, co2, mainTime, mainCo2));
             } else {
